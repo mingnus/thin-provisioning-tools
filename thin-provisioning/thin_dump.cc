@@ -22,6 +22,7 @@
 #include <getopt.h>
 #include <libgen.h>
 
+#include "compact_format.h"
 #include "human_readable_format.h"
 #include "metadata_dumper.h"
 #include "metadata.h"
@@ -67,6 +68,9 @@ namespace {
 			else if (format == "human_readable")
 				e = create_human_readable_emitter(out);
 
+			else if (format == "compact")
+				e = create_compact_emitter(out);
+
 			else {
 				cerr << "unknown format '" << format << "'" << endl;
 				exit(1);
@@ -107,7 +111,7 @@ thin_dump_cmd::usage(std::ostream &out) const
 	out << "Usage: " << get_name() << " [options] {device|file}" << endl
 	    << "Options:" << endl
 	    << "  {-h|--help}" << endl
-	    << "  {-f|--format} {xml|human_readable}" << endl
+	    << "  {-f|--format} {xml|human_readable|compact}" << endl
 	    << "  {-r|--repair}" << endl
 	    << "  {-d|--device-id} <dev_id>" << endl
 	    << "  {-m|--metadata-snap} [block#]" << endl
