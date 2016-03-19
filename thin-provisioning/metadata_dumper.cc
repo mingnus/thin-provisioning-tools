@@ -246,6 +246,43 @@ thin_provisioning::metadata_dump(metadata::ptr md, emitter::ptr e, bool repair)
 //----------------------------------------------------------------
 
 void
+thin_provisioning::metadata_dump(metadata::ptr md, emitter::ptr e, bool repair, uint64_t dev_id)
+{
+	uint64_t key[1] = {dev_id};
+
+	dev_tree::maybe_value subtree_root = md->mappings_top_level_->lookup(key);
+	if (!subtree_root)
+		throw runtime_error("specified device id not found in top-level mapping tree");
+
+	details_extractor de;
+	device_tree::maybe_value details = md->details_->lookup(key);
+	if (details)
+		de.visit(dev_id, *details);
+
+	// metadata snap doesn't have the space maps so we don't know how
+	// many data blocks there are.
+	block_address nr_data_blocks = md->data_sm_ ? md->data_sm_->get_nr_blocks() : 0;
+
+	e->begin_superblock("", md->sb_.time_,
+			    md->sb_.trans_id_,
+			    md->sb_.flags_,
+			    md->sb_.version_,
+			    md->sb_.data_block_size_,
+			    nr_data_blocks,
+			    boost::optional<block_address>());
+
+	{
+		mapping_tree_emitter mte(md, e, de.get_details(), repair, mapping_damage_policy(repair));
+		std::vector<uint64_t> path(1, dev_id);
+		mte.visit(path, *subtree_root);
+	}
+
+	e->end_superblock();
+}
+
+//----------------------------------------------------------------
+
+void
 thin_provisioning::metadata_dump_subtree(metadata::ptr md, emitter::ptr e, bool repair, uint64_t subtree_root) {
 	mapping_emitter me(e);
 	single_mapping_tree tree(*md->tm_, subtree_root,

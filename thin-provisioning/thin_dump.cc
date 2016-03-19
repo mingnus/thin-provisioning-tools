@@ -16,6 +16,7 @@
 // with thin-provisioning-tools.  If not, see
 // <http://www.gnu.org/licenses/>.
 
+#include <boost/lexical_cast.hpp>
 #include <fstream>
 #include <iostream>
 #include <getopt.h>
@@ -45,6 +46,7 @@ namespace {
 		bool repair;
 		bool use_metadata_snap;
 		optional<block_address> snap_location;
+		optional<uint64_t> dev_id;
 	};
 
 	metadata::ptr open_metadata(string const &path, struct flags &flags) {
@@ -70,7 +72,10 @@ namespace {
 				exit(1);
 			}
 
-			metadata_dump(md, e, flags.repair);
+			if (flags.dev_id)
+				metadata_dump(md, e, flags.repair, *flags.dev_id);
+			else
+				metadata_dump(md, e, flags.repair);
 
 		} catch (std::exception &e) {
 			cerr << e.what() << endl;
@@ -104,6 +109,7 @@ thin_dump_cmd::usage(std::ostream &out) const
 	    << "  {-h|--help}" << endl
 	    << "  {-f|--format} {xml|human_readable}" << endl
 	    << "  {-r|--repair}" << endl
+	    << "  {-d|--device-id} <dev_id>" << endl
 	    << "  {-m|--metadata-snap} [block#]" << endl
 	    << "  {-o <xml file>}" << endl
 	    << "  {-V|--version}" << endl;
@@ -114,14 +120,16 @@ thin_dump_cmd::run(int argc, char **argv)
 {
 	int c;
 	char const *output = NULL;
-	const char shortopts[] = "hm::o:f:rV";
+	const char shortopts[] = "hm::o:d:f:rV";
 	char *end_ptr;
 	string format = "xml";
 	block_address metadata_snap = 0;
+	boost::optional<uint64_t> dev_id;
 	struct flags flags;
 
 	const struct option longopts[] = {
 		{ "help", no_argument, NULL, 'h'},
+		{ "device-id", required_argument, NULL, 'd' },
 		{ "metadata-snap", optional_argument, NULL, 'm' },
 		{ "output", required_argument, NULL, 'o'},
 		{ "format", required_argument, NULL, 'f' },
@@ -142,6 +150,15 @@ thin_dump_cmd::run(int argc, char **argv)
 
 		case 'r':
 			flags.repair = true;
+			break;
+
+		case 'd':
+			try {
+				flags.dev_id = boost::lexical_cast<uint64_t>(optarg);
+			} catch (std::exception &e) {
+				cerr << e.what() << endl;
+				return 1;
+			}
 			break;
 
 		case 'm':
