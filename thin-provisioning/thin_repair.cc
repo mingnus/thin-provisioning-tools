@@ -24,7 +24,7 @@ namespace {
 
 			block_manager<>::ptr old_bm = open_bm(old_path, block_manager<>::READ_ONLY);
 			metadata::ptr old_md(new metadata(old_bm, false)); // we don't need to read the space maps
-			metadata_dump(old_md, e, true);
+			metadata_dump(old_md, e, true, DUMP_DATA_MAPPINGS);
 
 		} catch (std::exception &e) {
 			cerr << e.what() << endl;

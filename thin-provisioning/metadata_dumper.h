@@ -25,11 +25,15 @@
 //----------------------------------------------------------------
 
 namespace thin_provisioning {
+	enum verbosity_flags {
+		DUMP_DATA_MAPPINGS = (1 << 0)
+	};
+
 	// Set the @repair flag if your metadata is corrupt, and you'd like
 	// the dumper to do it's best to recover info.  If not set, any
 	// corruption encountered will cause an exception to be thrown.
-	void metadata_dump(metadata::ptr md, emitter::ptr e, bool repair);
-	void metadata_dump(metadata::ptr md, emitter::ptr e, bool repair, uint64_t dev_id);
+	void metadata_dump(metadata::ptr md, emitter::ptr e, bool repair, uint32_t verbosity);
+	void metadata_dump(metadata::ptr md, emitter::ptr e, bool repair, uint32_t verbosity, uint64_t dev_id);
 	void metadata_dump_subtree(metadata::ptr md, emitter::ptr e, bool repair, uint64_t subtree_root);
 }
 

@@ -170,7 +170,12 @@ namespace {
 			  e_(e),
 			  dd_(dd),
 			  repair_(repair),
+			  skip_mappings_(false),
 			  damage_policy_(damage_policy) {
+		}
+
+		void set_skip_mappings(bool skip) {
+			skip_mappings_ = skip;
 		}
 
 		void visit(btree_path const &path, block_address tree_root) {
@@ -185,7 +190,8 @@ namespace {
 						 d.creation_time_,
 						 d.snapshotted_time_);
 
-				emit_mappings(tree_root);
+				if (!skip_mappings_)
+					emit_mappings(tree_root);
 
 				e_->end_device();
 
@@ -209,6 +215,7 @@ namespace {
 		emitter::ptr e_;
 		dd_map const &dd_;
 		bool repair_;
+		bool skip_mappings_;
 		mapping_tree_detail::damage_visitor::ptr damage_policy_;
 	};
 }
@@ -216,7 +223,7 @@ namespace {
 //----------------------------------------------------------------
 
 void
-thin_provisioning::metadata_dump(metadata::ptr md, emitter::ptr e, bool repair)
+thin_provisioning::metadata_dump(metadata::ptr md, emitter::ptr e, bool repair, uint32_t verbosity)
 {
 	details_extractor de;
 	device_tree_detail::damage_visitor::ptr dd_policy(details_damage_policy(repair));
@@ -237,6 +244,7 @@ thin_provisioning::metadata_dump(metadata::ptr md, emitter::ptr e, bool repair)
 	{
 		mapping_tree_detail::damage_visitor::ptr md_policy(mapping_damage_policy(repair));
 		mapping_tree_emitter mte(md, e, de.get_details(), repair, mapping_damage_policy(repair));
+		mte.set_skip_mappings(!static_cast<bool>(verbosity & DUMP_DATA_MAPPINGS));
 		walk_mapping_tree(*md->mappings_top_level_, mte, *md_policy);
 	}
 
@@ -246,7 +254,7 @@ thin_provisioning::metadata_dump(metadata::ptr md, emitter::ptr e, bool repair)
 //----------------------------------------------------------------
 
 void
-thin_provisioning::metadata_dump(metadata::ptr md, emitter::ptr e, bool repair, uint64_t dev_id)
+thin_provisioning::metadata_dump(metadata::ptr md, emitter::ptr e, bool repair, uint32_t verbosity, uint64_t dev_id)
 {
 	uint64_t key[1] = {dev_id};
 
@@ -273,6 +281,7 @@ thin_provisioning::metadata_dump(metadata::ptr md, emitter::ptr e, bool repair, 
 
 	{
 		mapping_tree_emitter mte(md, e, de.get_details(), repair, mapping_damage_policy(repair));
+		mte.set_skip_mappings(!static_cast<bool>(verbosity & DUMP_DATA_MAPPINGS));
 		std::vector<uint64_t> path(1, dev_id);
 		mte.visit(path, *subtree_root);
 	}

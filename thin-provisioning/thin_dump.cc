@@ -41,13 +41,15 @@ namespace {
 	struct flags {
 		flags()
 			: repair(false),
-			  use_metadata_snap(false) {
+			  use_metadata_snap(false),
+			  verbosity(DUMP_DATA_MAPPINGS) {
 		}
 
 		bool repair;
 		bool use_metadata_snap;
 		optional<block_address> snap_location;
 		optional<uint64_t> dev_id;
+		uint32_t verbosity;
 	};
 
 	metadata::ptr open_metadata(string const &path, struct flags &flags) {
@@ -77,9 +79,9 @@ namespace {
 			}
 
 			if (flags.dev_id)
-				metadata_dump(md, e, flags.repair, *flags.dev_id);
+				metadata_dump(md, e, flags.repair, flags.verbosity, *flags.dev_id);
 			else
-				metadata_dump(md, e, flags.repair);
+				metadata_dump(md, e, flags.repair, flags.verbosity);
 
 		} catch (std::exception &e) {
 			cerr << e.what() << endl;
@@ -139,6 +141,7 @@ thin_dump_cmd::run(int argc, char **argv)
 		{ "format", required_argument, NULL, 'f' },
 		{ "repair", no_argument, NULL, 'r'},
 		{ "version", no_argument, NULL, 'V'},
+		{ "skip-mappings", no_argument, NULL, 1},
 		{ NULL, no_argument, NULL, 0 }
 	};
 
@@ -187,6 +190,10 @@ thin_dump_cmd::run(int argc, char **argv)
 		case 'V':
 			cout << THIN_PROVISIONING_TOOLS_VERSION << endl;
 			return 0;
+
+		case 1:
+			flags.verbosity &= ~DUMP_DATA_MAPPINGS;
+			break;
 
 		default:
 			usage(cerr);
