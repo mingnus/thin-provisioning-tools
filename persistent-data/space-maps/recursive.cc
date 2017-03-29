@@ -101,6 +101,11 @@ namespace {
 				add_op(block_op(block_op::SET, b, c));
 			else {
 				recursing_lock lock(*this);
+
+				// the inner set_count may trigger a find_free,
+				// so it's important we update the allocated
+				// blocks list before calling.
+				allocated_blocks_.add(b, b + 1);
 				return sm_->set_count(b, c);
 			}
 		}
@@ -115,6 +120,11 @@ namespace {
 				add_op(block_op(block_op::INC, b));
 			else {
 				recursing_lock lock(*this);
+
+				// the inner inc() may trigger a find_free,
+				// so it's important we update the allocated
+				// blocks list before calling.
+				allocated_blocks_.add(b, b + 1);
 				return sm_->inc(b);
 			}
 		}
