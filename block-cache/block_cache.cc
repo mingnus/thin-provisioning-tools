@@ -20,7 +20,7 @@ using namespace bcache;
 
 // FIXME: get from linux headers
 #define SECTOR_SHIFT 9
-#define PAGE_SIZE 4096
+#define PAGE_SIZE sysconf(_SC_PAGE_SIZE)
 
 #define MIN_BLOCKS 16
 #define WRITEBACK_LOW_THRESHOLD_PERCENT 33
