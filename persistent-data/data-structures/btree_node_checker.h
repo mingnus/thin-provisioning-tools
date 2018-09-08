@@ -45,8 +45,16 @@ namespace persistent_data {
 			virtual ~btree_node_checker() {}
 
 			template <typename ValueTraits>
+			bool check_block_nr(btree_detail::node_ref<ValueTraits> const &n) const {
+				if (n.get_location() != n.get_block_nr())
+					return false;
+				return true;
+			}
+
+			template <typename ValueTraits>
 			bool check_block_nr(btree_detail::node_ref<ValueTraits> const &n) {
-				if (n.get_location() != n.get_block_nr()) {
+				btree_node_checker const &c = static_cast<btree_node_checker const &>(*this);
+				if (!c.check_block_nr(n)) {
 					last_error_ = BLOCK_NR_MISMATCH;
 					error_block_nr_ = n.get_block_nr();
 					error_location_ = n.get_location();
@@ -58,8 +66,16 @@ namespace persistent_data {
 			}
 
 			template <typename ValueTraits>
+			bool check_value_size(btree_detail::node_ref<ValueTraits> const &n) const {
+				if (!n.value_sizes_match())
+					return false;
+				return true;
+			}
+
+			template <typename ValueTraits>
 			bool check_value_size(btree_detail::node_ref<ValueTraits> const &n) {
-				if (!n.value_sizes_match()) {
+				btree_node_checker const &c = static_cast<btree_node_checker const &>(*this);
+				if (!c.check_value_size(n)) {
 					last_error_ = VALUE_SIZES_MISMATCH;
 					error_location_ = n.get_location();
 					error_value_sizes_[0] = n.get_value_size();
@@ -67,6 +83,16 @@ namespace persistent_data {
 					return false;
 				}
 
+				return true;
+			}
+
+			template <typename ValueTraits>
+			bool check_max_entries(btree_detail::node_ref<ValueTraits> const &n) const {
+				size_t elt_size = sizeof(uint64_t) + n.get_value_size();
+				if (elt_size * n.get_max_entries() + sizeof(node_header) > MD_BLOCK_SIZE)
+					return false;
+				if (n.get_max_entries() % 3)
+					return false;
 				return true;
 			}
 
@@ -94,6 +120,17 @@ namespace persistent_data {
 
 			template <typename ValueTraits>
 			bool check_nr_entries(btree_detail::node_ref<ValueTraits> const &n,
+					      bool is_root) const {
+				if (n.get_nr_entries() > n.get_max_entries())
+					return false;
+				block_address min = n.get_max_entries() / 3;
+				if (!is_root && (n.get_nr_entries() < min))
+					return false;
+				return true;
+			}
+
+			template <typename ValueTraits>
+			bool check_nr_entries(btree_detail::node_ref<ValueTraits> const &n,
 					      bool is_root) {
 				if (n.get_nr_entries() > n.get_max_entries()) {
 					last_error_ = NR_ENTRIES_TOO_LARGE;
@@ -112,6 +149,25 @@ namespace persistent_data {
 					error_max_entries_ = n.get_max_entries();
 
 					return false;
+				}
+
+				return true;
+			}
+
+			template <typename ValueTraits>
+			bool check_ordered_keys(btree_detail::node_ref<ValueTraits> const &n) const {
+				unsigned nr_entries = n.get_nr_entries();
+
+				if (nr_entries == 0)
+					return true; // can only happen if a root node
+
+				uint64_t last_key = n.key_at(0);
+
+				for (unsigned i = 1; i < nr_entries; i++) {
+					uint64_t k = n.key_at(i);
+					if (k <= last_key)
+						return false;
+					last_key = k;
 				}
 
 				return true;
@@ -144,11 +200,21 @@ namespace persistent_data {
 
 			template <typename ValueTraits>
 			bool check_parent_key(btree_detail::node_ref<ValueTraits> const &n,
-					      boost::optional<uint64_t> key) {
+					      boost::optional<uint64_t> key) const {
 				if (!key)
 					return true;
 
-				if (*key > n.key_at(0)) {
+				if (*key > n.key_at(0))
+					return false;
+
+				return true;
+			}
+
+			template <typename ValueTraits>
+			bool check_parent_key(btree_detail::node_ref<ValueTraits> const &n,
+					      boost::optional<uint64_t> key) {
+				btree_node_checker const &c = static_cast<btree_node_checker const &>(*this);
+				if (!c.check_parent_key(n, key)) {
 					last_error_ = PARENT_KEY_MISMATCH;
 					error_location_ = n.get_location();
 					error_keys_[0] = n.key_at(0);
@@ -162,11 +228,21 @@ namespace persistent_data {
 
 			template <typename ValueTraits>
 			bool check_leaf_key(btree_detail::node_ref<ValueTraits> const &n,
-					    boost::optional<uint64_t> key) {
+					    boost::optional<uint64_t> key) const {
 				if (n.get_nr_entries() == 0)
 					return true; // can only happen if a root node
 
-				if (key && *key >= n.key_at(0)) {
+				if (key && *key >= n.key_at(0))
+					return false;
+
+				return true;
+			}
+
+			template <typename ValueTraits>
+			bool check_leaf_key(btree_detail::node_ref<ValueTraits> const &n,
+					    boost::optional<uint64_t> key) {
+				btree_node_checker const &c = static_cast<btree_node_checker const &>(*this);
+				if (!c.check_leaf_key(n, key)) {
 					last_error_ = LEAF_KEY_OVERLAPPED;
 					error_location_ = n.get_location();
 					error_keys_[0] = n.key_at(0);
@@ -179,16 +255,24 @@ namespace persistent_data {
 			}
 
 			template <typename ValueTraits>
-			bool check_flags(btree_detail::node_ref<ValueTraits> const &n) {
+			bool check_flags(btree_detail::node_ref<ValueTraits> const &n) const {
 				uint32_t flags = to_cpu<uint32_t>(n.raw()->header.flags) & 0x3;
-				if (flags == INTERNAL_NODE || flags == LEAF_NODE) {
+				if (flags == INTERNAL_NODE || flags == LEAF_NODE)
+					return true;
+				return false;
+			}
+
+			template <typename ValueTraits>
+			bool check_flags(btree_detail::node_ref<ValueTraits> const &n) {
+				btree_node_checker const &c = static_cast<btree_node_checker const &>(*this);
+				if (!c.check_flags(n)) {
 					last_error_ = INVALID_FLAGS;
 					error_location_ = n.get_location();
-					error_flags_ = flags;
+					error_flags_ = to_cpu<uint32_t>(n.raw()->header.flags);
 
-					return true;
+					return false;
 				}
-				return false;
+				return true;
 			}
 
 			error_type get_last_error() const;

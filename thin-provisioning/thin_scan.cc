@@ -344,10 +344,10 @@ namespace {
 		size_t value_size_;
 
 	private:
-		static btree_node_checker checker_;
+		const static btree_node_checker checker_;
 	};
 
-	btree_node_checker btree_block_range::checker_;
+	const btree_node_checker btree_block_range::checker_;
 
 	ostream &operator<<(std::ostream &out, block_range const &r) {
 		r.print(out);
