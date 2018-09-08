@@ -21,6 +21,7 @@
 #include <fstream>
 
 #include "persistent-data/data-structures/btree.h"
+#include "persistent-data/data-structures/btree_node_checker.h"
 #include "persistent-data/data-structures/simple_traits.h"
 #include "persistent-data/file_utils.h"
 #include "persistent-data/space-maps/core.h"
@@ -35,75 +36,6 @@ using namespace std;
 using namespace thin_provisioning;
 
 //----------------------------------------------------------------
-
-namespace {
-	bool check_flags(uint32_t flags) {
-		flags &= 0x3;
-		if (flags == INTERNAL_NODE || flags == LEAF_NODE)
-			return true;
-		return false;
-	}
-
-	// extracted from btree_damage_visitor.h
-	template <typename node>
-	bool check_block_nr(node const &n) {
-		if (n.get_location() != n.get_block_nr()) {
-			return false;
-		}
-		return true;
-	}
-
-	// extracted from btree_damage_visitor.h
-	template <typename node>
-	bool check_max_entries(node const &n) {
-		size_t elt_size = sizeof(uint64_t) + n.get_value_size();
-		if (elt_size * n.get_max_entries() + sizeof(node_header) > MD_BLOCK_SIZE) {
-			return false;
-		}
-
-		if (n.get_max_entries() % 3) {
-			return false;
-		}
-
-		return true;
-	}
-
-	// extracted from btree_damage_visitor.h
-	template <typename node>
-	bool check_nr_entries(node const &n, bool is_root) {
-		if (n.get_nr_entries() > n.get_max_entries()) {
-			return false;
-		}
-
-		block_address min = n.get_max_entries() / 3;
-		if (!is_root && (n.get_nr_entries() < min)) {
-			return false;
-		}
-
-		return true;
-	}
-
-	// extracted from btree_damage_visitor.h
-	template <typename node>
-	bool check_ordered_keys(node const &n) {
-		unsigned nr_entries = n.get_nr_entries();
-
-		if (nr_entries == 0)
-			return true; // can only happen if a root node
-
-		uint64_t last_key = n.key_at(0);
-
-		for (unsigned i = 1; i < nr_entries; i++) {
-			uint64_t k = n.key_at(i);
-			if (k <= last_key) {
-				return false;
-			}
-			last_key = k;
-		}
-
-		return true;
-	}
-}
 
 namespace {
 	uint32_t const SUPERBLOCK_CSUM_SEED = 160774;
@@ -350,11 +282,11 @@ namespace {
 			flags_ = to_cpu<uint32_t>(n.raw()->header.flags);
 			value_size_ = n.get_value_size();
 
-			if (check_flags(flags_) &&
-			    check_block_nr(n) &&
-			    check_max_entries(n) &&
-			    check_nr_entries(n, true) &&
-			    check_ordered_keys(n))
+			if (checker_.check_flags(n) &&
+			    checker_.check_block_nr(n) &&
+			    checker_.check_max_entries(n) &&
+			    checker_.check_nr_entries(n, true) &&
+			    checker_.check_ordered_keys(n))
 				is_valid_ = true;
 			else
 				is_valid_ = false;
@@ -410,7 +342,12 @@ namespace {
 
 		uint32_t flags_;
 		size_t value_size_;
+
+	private:
+		static btree_node_checker checker_;
 	};
+
+	btree_node_checker btree_block_range::checker_;
 
 	ostream &operator<<(std::ostream &out, block_range const &r) {
 		r.print(out);
@@ -499,7 +436,7 @@ namespace {
 				if (!run_range_->concat(r)) {
 					ret = std::move(run_range_);
 					run_range_ = r.clone();
-					break;
+					return ret;
 				}
 			}
 			if (!ret) { // for the last run (index_ == scan_end_)

@@ -29,6 +29,7 @@ namespace persistent_data {
 				VALUE_SIZE_MISMATCH,
 				PARENT_KEY_MISMATCH,
 				LEAF_KEY_OVERLAPPED,
+				INVALID_FLAGS,
 			};
 
 			btree_node_checker():
@@ -177,6 +178,19 @@ namespace persistent_data {
 				return true;
 			}
 
+			template <typename ValueTraits>
+			bool check_flags(btree_detail::node_ref<ValueTraits> const &n) {
+				uint32_t flags = to_cpu<uint32_t>(n.raw()->header.flags) & 0x3;
+				if (flags == INTERNAL_NODE || flags == LEAF_NODE) {
+					last_error_ = INVALID_FLAGS;
+					error_location_ = n.get_location();
+					error_flags_ = flags;
+
+					return true;
+				}
+				return false;
+			}
+
 			error_type get_last_error() const;
 			std::string get_last_error_string() const;
 			void reset();
@@ -199,6 +213,7 @@ namespace persistent_data {
 			uint32_t error_max_entries_;
 			uint32_t error_value_sizes_[2];
 			uint64_t error_keys_[2];
+			uint32_t error_flags_;
 		};
 	}
 }
