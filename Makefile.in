@@ -107,12 +107,14 @@ SOURCE=\
 	thin-provisioning/restore_emitter.cc \
 	thin-provisioning/rmap_visitor.cc \
 	thin-provisioning/superblock.cc \
+	thin-provisioning/space_map_rebuilder.cc \
 	thin-provisioning/thin_check.cc \
 	thin-provisioning/thin_delta.cc \
 	thin-provisioning/thin_dump.cc \
 	thin-provisioning/thin_ls.cc \
 	thin-provisioning/thin_metadata_size.cc \
 	thin-provisioning/thin_pool.cc \
+	thin-provisioning/thin_rebuild.cc \
 	thin-provisioning/thin_repair.cc \
 	thin-provisioning/thin_restore.cc \
 	thin-provisioning/thin_rmap.cc \

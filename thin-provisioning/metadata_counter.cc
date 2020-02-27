@@ -8,9 +8,9 @@ using namespace thin_provisioning;
 //----------------------------------------------------------------
 
 namespace {
-	void count_trees(transaction_manager::ptr tm,
-			 superblock_detail::superblock const &sb,
-			 block_counter &bc) {
+	void count_trees_only(transaction_manager::ptr tm,
+			      superblock_detail::superblock const &sb,
+			      block_counter &bc) {
 
 		// Count the device tree
 		{
@@ -29,9 +29,9 @@ namespace {
 		}
 	}
 
-	void count_space_maps(transaction_manager::ptr tm,
-			      superblock_detail::superblock const &sb,
-			      block_counter &bc) {
+	void count_space_maps_only(transaction_manager::ptr tm,
+				   superblock_detail::superblock const &sb,
+				   block_counter &bc) {
 		// Count the metadata space map (no-throw)
 		try {
 			persistent_space_map::ptr metadata_sm =
@@ -58,17 +58,34 @@ void thin_provisioning::count_metadata(transaction_manager::ptr tm,
 				       bool skip_metadata_snap) {
 	// Count the superblock
 	bc.inc(superblock_detail::SUPERBLOCK_LOCATION);
-	count_trees(tm, sb, bc);
+	count_trees_only(tm, sb, bc);
 
 	// Count the metadata snap, if present
 	if (!skip_metadata_snap && sb.metadata_snap_ != superblock_detail::SUPERBLOCK_LOCATION) {
 		bc.inc(sb.metadata_snap_);
 
 		superblock_detail::superblock snap = read_superblock(tm->get_bm(), sb.metadata_snap_);
-		count_trees(tm, snap, bc);
+		count_trees_only(tm, snap, bc);
 	}
 
-	count_space_maps(tm, sb, bc);
+	count_space_maps_only(tm, sb, bc);
+}
+
+//----------------------------------------------------------------
+
+void thin_provisioning::count_trees(transaction_manager::ptr tm,
+				    superblock_detail::superblock const &sb,
+				    block_counter &bc) {
+	bc.inc(superblock_detail::SUPERBLOCK_LOCATION);
+	count_trees_only(tm, sb, bc);
+}
+
+//----------------------------------------------------------------
+
+void thin_provisioning::count_space_maps(transaction_manager::ptr tm,
+					 superblock_detail::superblock const &sb,
+					 block_counter &bc) {
+	count_space_maps_only(tm, sb, bc);
 }
 
 //----------------------------------------------------------------

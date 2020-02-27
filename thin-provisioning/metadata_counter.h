@@ -11,6 +11,14 @@ namespace thin_provisioning {
 			    superblock_detail::superblock const &sb,
 			    block_counter &bc,
 			    bool skip_metadata_snap = false);
+
+	void count_trees(transaction_manager::ptr tm,
+			 superblock_detail::superblock const &sb,
+			 block_counter &bc);
+
+	void count_space_maps(transaction_manager::ptr tm,
+			      superblock_detail::superblock const &sb,
+			      block_counter &bc);
 }
 
 //----------------------------------------------------------------
