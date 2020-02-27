@@ -16,7 +16,10 @@ namespace persistent_data {
 
 			counting_visitor(block_counter &bc, ValueCounter &vc)
 				: bc_(bc),
-				  vc_(vc) {
+				  vc_(vc),
+				  error_outcome_(bc.break_on_error() ?
+						 tree::visitor::RETHROW_EXCEPTION :
+						 tree::visitor::EXCEPTION_HANDLED) {
 			}
 
 			virtual bool visit_internal(node_location const &l,
@@ -47,11 +50,11 @@ namespace persistent_data {
 				return false;
 			}
 
-			typedef typename btree<Levels, ValueTraits>::visitor::error_outcome error_outcome;
+			typedef typename tree::visitor::error_outcome error_outcome;
 
 			error_outcome error_accessing_node(node_location const &l, block_address b,
 							   std::string const &what) {
-				return btree<Levels, ValueTraits>::visitor::EXCEPTION_HANDLED;
+				return error_outcome_;
 			}
 
 		private:
@@ -110,6 +113,7 @@ namespace persistent_data {
 			ValueCounter &vc_;
 			btree_node_checker checker_;
 			boost::optional<uint64_t> last_leaf_key_[Levels];
+			error_outcome error_outcome_;
 		};
 	}
 
