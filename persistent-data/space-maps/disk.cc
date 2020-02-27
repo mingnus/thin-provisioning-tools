@@ -796,11 +796,9 @@ persistent_data::create_disk_sm(transaction_manager &tm,
 checked_space_map::ptr
 persistent_data::open_disk_sm(transaction_manager &tm, void const *root)
 {
-	sm_root_disk d;
 	sm_root v;
 
-	::memcpy(&d, root, sizeof(d));
-	sm_root_traits::unpack(d, v);
+	unpack_sm_root(root, v);
 	index_store::ptr store(new btree_index_store(tm, v.bitmap_root_));
 	return checked_space_map::ptr(new sm_disk(store, tm, v));
 }
@@ -824,11 +822,9 @@ persistent_data::create_metadata_sm(transaction_manager &tm, block_address nr_bl
 checked_space_map::ptr
 persistent_data::open_metadata_sm(transaction_manager &tm, void const *root)
 {
-	sm_root_disk d;
 	sm_root v;
 
-	::memcpy(&d, root, sizeof(d));
-	sm_root_traits::unpack(d, v);
+	unpack_sm_root(root, v);
 	block_address nr_indexes = div_up<block_address>(v.nr_blocks_, ENTRIES_PER_BLOCK);
 	index_store::ptr store(new metadata_index_store(tm, v.bitmap_root_, nr_indexes));
 	return create_careful_alloc_sm(
@@ -849,12 +845,16 @@ persistent_data::index_validator() {
 block_address
 persistent_data::get_nr_blocks_in_data_sm(transaction_manager &tm, void *root)
 {
-	sm_root_disk d;
 	sm_root v;
+	unpack_sm_root(root, v);
+	return v.nr_blocks_;
+}
 
+void
+persistent_data::unpack_sm_root(void const *root, sm_root &v) {
+	sm_root_disk d;
 	::memcpy(&d, root, sizeof(d));
 	sm_root_traits::unpack(d, v);
-	return v.nr_blocks_;
 }
 
 //----------------------------------------------------------------

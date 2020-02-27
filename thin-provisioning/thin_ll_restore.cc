@@ -69,10 +69,8 @@ namespace {
 	}
 
 	void parse_superblock(metadata::ptr md, emitter::ptr e, attributes const &attr) {
-		sm_disk_detail::sm_root_disk const *d =
-			reinterpret_cast<sm_disk_detail::sm_root_disk const *>(md->sb_.data_space_map_root_);
 		sm_disk_detail::sm_root v;
-		sm_disk_detail::sm_root_traits::unpack(*d, v);
+		unpack_sm_root(md->sb_.data_space_map_root_, v);
 
 		e->begin_superblock("", md->sb_.time_,
 				    md->sb_.trans_id_,

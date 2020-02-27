@@ -21,6 +21,7 @@
 
 #include "persistent-data/transaction_manager.h"
 #include "persistent-data/space_map.h"
+#include "persistent-data/space-maps/disk_structures.h"
 
 //----------------------------------------------------------------
 
@@ -45,6 +46,8 @@ namespace persistent_data {
 	// repairing to avoid the bulk of the space maps.
 	block_address
 	get_nr_blocks_in_data_sm(transaction_manager &tm, void *root);
+
+	void unpack_sm_root(void const *root, sm_disk_detail::sm_root &v);
 }
 
 //----------------------------------------------------------------
