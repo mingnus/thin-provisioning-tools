@@ -198,24 +198,26 @@ namespace {
 
 	private:
 		void flush_ops_() {
-			op_map::const_iterator it, end = ops_.end();
+			op_map::iterator it, end = ops_.end();
 			for (it = ops_.begin(); it != end; ++it) {
 				recursing_lock lock(*this);
 
-				list<block_op> const &ops = it->second;
-				list<block_op>::const_iterator op_it, op_end = ops.end();
-				for (op_it = ops.begin(); op_it != op_end; ++op_it) {
-					switch (op_it->op_) {
+				list<block_op> &ops = it->second;
+				while (!ops.empty()) {
+					block_op op = ops.front();
+					ops.pop_front();
+
+					switch (op.op_) {
 					case block_op::INC:
-						sm_->inc(op_it->b_);
+						sm_->inc(op.b_);
 						break;
 
 					case block_op::DEC:
-						sm_->dec(op_it->b_);
+						sm_->dec(op.b_);
 						break;
 
 					case block_op::SET:
-						sm_->set_count(op_it->b_, op_it->rc_);
+						sm_->set_count(op.b_, op.rc_);
 						break;
 					}
 				}
