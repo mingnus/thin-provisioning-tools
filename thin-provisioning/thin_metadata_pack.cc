@@ -40,6 +40,7 @@ using boost::optional;
 
 namespace {
 	using namespace std;
+	constexpr uint32_t HEADER_SIZE = 4096;
 	constexpr uint64_t MAGIC = 0xa537a0aa6309ef77;
 
 	uint32_t const SUPERBLOCK_CSUM_SEED = 160774;
@@ -52,7 +53,40 @@ namespace {
 	// 
 	// file := <file-header> <entry>*
 	// file-header := MAGIC BLOCK_SIZE NR_BLOCKS NR_ENTRIES
-	// entry := BLOCK_NR BYTES	class flags {
+	// entry := BLOCK_NR BYTES
+
+	struct file_header {
+		uint64_t magic_;
+		uint64_t block_size_;
+		uint64_t nr_blocks_;
+		uint64_t nr_entries_;
+	};
+
+	struct file_header_disk {
+		base::le64 magic_;
+		base::le64 block_size_;
+		base::le64 nr_blocks_;
+		base::le64 nr_entries_;
+	} __attribute__ ((packed));
+
+	struct file_header_traits {
+		static void pack(file_header const &core, file_header_disk &disk);
+		static void unpack(file_header_disk const &disk, file_header &core);
+	};
+
+	void file_header_traits::pack(file_header const &core, file_header_disk &disk) {
+		disk.magic_ = base::to_disk<base::le64>(core.magic_);
+		disk.block_size_ = base::to_disk<base::le64>(core.block_size_);
+		disk.nr_blocks_ = base::to_disk<base::le64>(core.nr_blocks_);
+		disk.nr_entries_ = base::to_disk<base::le64>(core.nr_entries_);
+	}
+
+	void file_header_traits::unpack(file_header_disk const &disk, file_header &core) {
+		core.magic_ = base::to_cpu<uint64_t>(disk.magic_);
+		core.block_size_ = base::to_cpu<uint64_t>(disk.block_size_);
+		core.nr_blocks_ = base::to_cpu<uint64_t>(disk.nr_blocks_);
+		core.nr_entries_ = base::to_cpu<uint64_t>(disk.nr_entries_);
+	}
 
 	struct flags {
 		optional<string> input_file_;
@@ -109,6 +143,40 @@ namespace {
 			throw runtime_error("couldn't write u64");
 	}
 
+	file_header read_header(istream &in) {
+		vector<char> superblock(HEADER_SIZE, 0);
+		in.read(superblock.data(), HEADER_SIZE);
+
+		if (!in)
+			throw runtime_error("couldn't read header");
+
+		file_header_disk *disk = reinterpret_cast<file_header_disk*>(superblock.data());
+		file_header header;
+		file_header_traits::unpack(*disk, header);
+
+		if (header.magic_ != MAGIC)
+			throw runtime_error("not a pack file");
+
+		return header;
+	}
+
+	void write_header(ostream &out, uint64_t block_size, uint64_t nr_blocks) {
+		vector<char> superblock(HEADER_SIZE, 0);
+
+		file_header header;
+		header.magic_ = MAGIC;
+		header.block_size_ = block_size;
+		header.nr_blocks_ = nr_blocks;
+		header.nr_entries_ = 0;
+
+		file_header_disk *disk = reinterpret_cast<file_header_disk*>(superblock.data());
+		file_header_traits::pack(header, *disk);
+		out.write(superblock.data(), HEADER_SIZE);
+
+		if (!out)
+			throw runtime_error("couldn't write header");
+	}
+
 	int pack(flags const &f) {
 		using namespace boost::iostreams;
 
@@ -125,9 +193,7 @@ namespace {
 
 		cerr << "nr_blocks = " << nr_blocks << "\n";
 
-		write_u64(out, MAGIC);
-		write_u64(out, block_size);
-		write_u64(out, nr_blocks);
+		write_header(out_file, block_size, nr_blocks);
 
 		is_metadata_functor is_metadata;
 		for (block_address b = 0; b < nr_blocks; b++) {
@@ -155,11 +221,9 @@ namespace {
 		in_buf.push(in_file);
 		std::istream in(&in_buf);
 
-		if (read_u64(in) != MAGIC)
-			throw runtime_error("not a pack file");
-
-		auto block_size = read_u64(in);
-		auto nr_blocks = read_u64(in);
+		file_header header = read_header(in_file);
+		auto block_size = header.block_size_;
+		auto nr_blocks = header.nr_blocks_;
 
 		prealloc_file(*f.output_file_, nr_blocks * block_size);
 		block_manager bm(*f.output_file_, nr_blocks, 6, block_manager::READ_WRITE, true);
