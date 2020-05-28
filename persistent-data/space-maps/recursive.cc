@@ -147,11 +147,11 @@ namespace {
 		virtual bool count_possibly_greater_than_one(block_address b) const {
 			recursing_const_lock lock(*this);
 
-			bool gto = sm_->count_possibly_greater_than_one(b);
-			if (gto)
+			ref_t c = sm_->get_count(b);
+			if (c > 1)
 				return true;
 
-			return modify_count(b, 1) > 1;
+			return modify_count(b, c) > 1;
 		}
 
 		virtual void extend(block_address extra_blocks) {
