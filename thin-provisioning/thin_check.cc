@@ -244,7 +244,7 @@ namespace {
 				nested_output::nest _ = out.push();
 				device_tree dtree(*tm, sb.device_details_root_,
 						  device_tree_detail::device_details_traits::ref_counter());
-				check_device_tree(dtree, dev_rep);
+				check_device_tree(dtree, dev_rep, fs.ignore_non_fatal_errors);
 			}
 		}
 
@@ -254,7 +254,7 @@ namespace {
 				nested_output::nest _ = out.push();
 				dev_tree dtree(*tm, mapping_root(sb, fs),
 					       mapping_tree_detail::mtree_traits::ref_counter(*tm));
-				check_mapping_tree(dtree, mapping_rep);
+				check_mapping_tree(dtree, mapping_rep, fs.ignore_non_fatal_errors);
 			}
 
 		} else if (fs.check_mapping_tree_level2) {
@@ -263,7 +263,7 @@ namespace {
 				nested_output::nest _ = out.push();
 				mapping_tree mtree(*tm, mapping_root(sb, fs),
 						   mapping_tree_detail::block_traits::ref_counter(tm->get_sm()));
-				check_mapping_tree(mtree, mapping_rep);
+				check_mapping_tree(mtree, mapping_rep, fs.ignore_non_fatal_errors);
 			}
 		}
 
