@@ -281,6 +281,52 @@ namespace persistent_data {
 		        maybe_block root_;
 		};
 
+		class iteration_spine {
+		public:
+			// make sure that the stack top an unfinished leaf
+			void step() {
+				frame = spine_.top();
+				++frame.current_;
+
+				// pop until reach an unfinished node
+				while (frame.current_ == frame.nr_entries_)
+					spine_.pop();
+
+				if (!spine_.size())
+					return;
+
+				// push until reach the leaf
+				frame = spine.top();
+				while (frame.type_ != LEAF) {
+					block_address b = frame.value_at(f.current_);
+					block_manager::read_ref child_ref = tm.read_lock(b);
+					push_frame(child_ref);
+
+					frame = spine.top();
+				}
+			}
+
+		private:
+			void push_frame(block_manger::read_ref &r) {
+				internal_node n = to_node<internal>(r);
+				if (n.get_type == INTERNAL) {
+					v_.visit_internal(n);
+					spine_.push_back(frame(INTERNAL, level, r));
+
+				// internal leaf
+				} else if (n.level < Level - 1) {
+					leaf_node o = to_node<leaf>(r);
+					v_.visit_internal_leaf(o);
+				} else {
+					leaf_node o = to_node<leaf>(r);
+					v_.visit_leaf(o);
+				}
+			}
+
+			std::stack<frame> spine_;
+			btree::visitor v_;
+		};
+
 		class shadow_child {
 		public:
 			shadow_child(block_manager::write_ref &wr, node_type type)
@@ -413,6 +459,63 @@ namespace persistent_data {
 
 		// Walks the tree in depth first order
 		void visit_depth_first(visitor &visitor) const;
+
+		template <typename Visitor = noop_visitor>
+		class const_iterator {
+		public:
+			const_iterator(transaction_manager &tm, block_address root) {
+			}
+
+			// iterator starts from the specified key
+			const_iterator(transaction_manager &tm, block_address root, uint64_t key) {
+			}
+
+			uint64_t operator*() {
+				if (!key_cached_) {
+					cached_key_ = spine.frame->node->key_at(frame.current_);
+					key_cached_ = true;
+				}
+
+				return cached_key_;
+			}
+
+			ValueType value() {
+				if (!entry_cached_) {
+					frame = spine.top();
+					cached_value_ = spine.frame->node->value_at(frame.current_);
+					value_cached_ = true;
+				}
+
+				return cached_value_;
+			}
+
+			void operator++() {
+				spine.step();
+				key_cached_ = value_cached_ = false;
+			}
+
+			// two pathes with the same leaf means that the entire spine
+			// must be overlapped, therefore comparing the leaf is enough
+			// FIXME: it's not always true for multi-level tree,
+			// if two snapshots share the same subtree
+			bool operator==(const_iterator &rhs) {
+				if (spine.size() != rhs.size())
+					return false;
+				if (spine.size() == 0 && rhs.size() == 0)
+					return true;
+				return spine.top() == rhs.top();
+			}
+
+		private:
+			transaction_manager &tm_;
+			iteration_spine spine_;
+			bool key_cached_;
+			bool value_cached_;
+			ValueType cached_value_;
+		};
+
+		const_iterator begin() const;
+		const_iterator end() const;
 
 	private:
 		template <typename ValueTraits2, typename Search>
