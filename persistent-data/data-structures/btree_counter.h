@@ -14,9 +14,11 @@ namespace persistent_data {
 		public:
 			typedef btree<Levels, ValueTraits> tree;
 
-			counting_visitor(block_counter &bc, ValueCounter &vc)
+			counting_visitor(block_counter &bc, ValueCounter &vc,
+					 bool ignore_non_fatal = false)
 				: bc_(bc),
-				  vc_(vc) {
+				  vc_(vc),
+				  ignore_non_fatal_(ignore_non_fatal) {
 			}
 
 			virtual bool visit_internal(node_location const &l,
@@ -63,7 +65,7 @@ namespace persistent_data {
 				if (!checker_.check_block_nr(n) ||
 				    !checker_.check_value_size(n) ||
 				    !checker_.check_max_entries(n) ||
-				    !checker_.check_nr_entries(n, l.is_sub_root()) ||
+				    !check_nr_entries(l, n) ||
 				    !checker_.check_ordered_keys(n) ||
 				    !checker_.check_parent_key(n, l.is_sub_root() ? boost::optional<uint64_t>() : l.key))
 					return false;
@@ -80,7 +82,7 @@ namespace persistent_data {
 				if (!checker_.check_block_nr(n) ||
 				    !checker_.check_value_size(n) ||
 				    !checker_.check_max_entries(n) ||
-				    !checker_.check_nr_entries(n, l.is_sub_root()) ||
+				    !check_nr_entries(l, n) ||
 				    !checker_.check_ordered_keys(n) ||
 				    !checker_.check_parent_key(n, l.is_sub_root() ? boost::optional<uint64_t>() : l.key) ||
 				    !checker_.check_leaf_key(n, last_leaf_key_[l.level()]))
@@ -106,10 +108,17 @@ namespace persistent_data {
 				return !seen;
 			}
 
+			template <typename ValueTraits2>
+			bool check_nr_entries(node_location const &loc,
+					      btree_detail::node_ref<ValueTraits2> const &n) {
+				return ignore_non_fatal_ || checker_.check_nr_entries(n, loc.is_sub_root());
+			}
+
 			block_counter &bc_;
 			ValueCounter &vc_;
 			btree_node_checker checker_;
 			boost::optional<uint64_t> last_leaf_key_[Levels];
+			bool ignore_non_fatal_;
 		};
 	}
 
@@ -137,8 +146,9 @@ namespace persistent_data {
 	// walked.  This walk should only be done once you're sure the tree
 	// is not corrupt.
 	template <unsigned Levels, typename ValueTraits, typename ValueCounter>
-	void count_btree_blocks(btree<Levels, ValueTraits> const &tree, block_counter &bc, ValueCounter &vc) {
-		btree_count_detail::counting_visitor<Levels, ValueTraits, ValueCounter> v(bc, vc);
+	void count_btree_blocks(btree<Levels, ValueTraits> const &tree, block_counter &bc, ValueCounter &vc,
+				bool ignore_non_fatal = false) {
+		btree_count_detail::counting_visitor<Levels, ValueTraits, ValueCounter> v(bc, vc, ignore_non_fatal);
 		tree.visit_depth_first(v);
 	}
 }

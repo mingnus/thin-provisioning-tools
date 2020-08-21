@@ -10,14 +10,15 @@ using namespace thin_provisioning;
 namespace {
 	void count_trees(transaction_manager::ptr tm,
 			 superblock_detail::superblock const &sb,
-			 block_counter &bc) {
+			 block_counter &bc,
+			 bool ignore_non_fatal) {
 
 		// Count the device tree
 		{
 			noop_value_counter<device_tree_detail::device_details> vc;
 			device_tree dtree(*tm, sb.device_details_root_,
 					  device_tree_detail::device_details_traits::ref_counter());
-			count_btree_blocks(dtree, bc, vc);
+			count_btree_blocks(dtree, bc, vc, ignore_non_fatal);
 		}
 
 		// Count the mapping tree
@@ -25,7 +26,7 @@ namespace {
 			noop_value_counter<mapping_tree_detail::block_time> vc;
 			mapping_tree mtree(*tm, sb.data_mapping_root_,
 					   mapping_tree_detail::block_traits::ref_counter(space_map::ptr()));
-			count_btree_blocks(mtree, bc, vc);
+			count_btree_blocks(mtree, bc, vc, ignore_non_fatal);
 		}
 	}
 
@@ -55,17 +56,18 @@ namespace {
 void thin_provisioning::count_metadata(transaction_manager::ptr tm,
 				       superblock_detail::superblock const &sb,
 				       block_counter &bc,
-				       bool skip_metadata_snap) {
+				       bool skip_metadata_snap,
+				       bool ignore_non_fatal) {
 	// Count the superblock
 	bc.inc(superblock_detail::SUPERBLOCK_LOCATION);
-	count_trees(tm, sb, bc);
+	count_trees(tm, sb, bc, ignore_non_fatal);
 
 	// Count the metadata snap, if present
 	if (!skip_metadata_snap && sb.metadata_snap_ != superblock_detail::SUPERBLOCK_LOCATION) {
 		bc.inc(sb.metadata_snap_);
 
 		superblock_detail::superblock snap = read_superblock(tm->get_bm(), sb.metadata_snap_);
-		count_trees(tm, snap, bc);
+		count_trees(tm, snap, bc, ignore_non_fatal);
 	}
 
 	count_space_maps(tm, sb, bc);

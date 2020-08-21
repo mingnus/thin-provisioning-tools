@@ -165,7 +165,7 @@ namespace {
 					   transaction_manager::ptr tm) {
 		block_counter bc;
 
-		count_metadata(tm, sb, bc);
+		count_metadata(tm, sb, bc, false, fs.ignore_non_fatal_errors);
 
 		// Finally we need to check the metadata space map agrees
 		// with the counts we've just calculated.
