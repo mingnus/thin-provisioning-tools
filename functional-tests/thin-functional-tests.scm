@@ -189,15 +189,6 @@
       (run-fail (thin-check "--auto-repair" "--skip-mappings" md))
       (run-fail (thin-check "--auto-repair" "--ignore-non-fatal-errors" md))))
 
-  (define-scenario (thin-check incompatible-options clear-needs-check-flag)
-    "Incompatible options should cause failure"
-    (with-valid-metadata (md)
-      (run-fail (thin-check "--clear-needs-check-flag" "-m" md))
-      (run-fail (thin-check "--clear-needs-check-flag" "--override-mapping-root 123" md))
-      (run-fail (thin-check "--clear-needs-check-flag" "--super-block-only" md))
-      (run-fail (thin-check "--clear-needs-check-flag" "--skip-mappings" md))
-      (run-fail (thin-check "--clear-needs-check-flag" "--ignore-non-fatal-errors" md))))
-
   (define-scenario (thin-check superblock-only-valid)
     "--super-block-only check passes on valid metadata"
     (with-valid-metadata (md)
@@ -229,6 +220,62 @@
     "Accepts --clear-needs-check-flag"
     (with-valid-metadata (md)
       (run-ok (thin-check "--clear-needs-check-flag" md))))
+
+  (define-scenario (thin-check mixing-clear-needs-check-flag super-block-only-should-pass)
+    "Accepts --clear-needs-check and --super-block-only"
+    (with-valid-metadata (md)
+      (run-ok (thin-check "--clear-needs-check-flag" "--super-block-only" md))))
+
+  (define-scenario (thin-check mixing-clear-needs-check-flag skip-mappings-should-pass)
+    "Accepts --clear-needs-check and --skip-mappings"
+    (with-valid-metadata (md)
+      (run-ok (thin-check "--clear-needs-check-flag" "--skip-mappings" md))))
+
+  (define-scenario (thin-check mixing-clear-needs-check-flag ignore-non-fatal-errors-should-pass)
+    "Accepts --clear-needs-check and --ignore-non-fatal-errors"
+    (with-valid-metadata (md)
+      (run-ok (thin-check "--clear-needs-check-flag" "--ignore-non-fatal-errors" md))))
+
+  (define-scenario (thin-check try-clear-needs-check-flag super-block-only-should-clear)
+    "--clear-needs-check is a noop while using --super-block-only"
+    (with-valid-metadata (md)
+      (set-needs-check-flag md)
+      (assert-metadata-needs-check md)
+      (run-ok (thin-check "--clear-needs-check-flag" "--super-block-only" md))
+      (assert-metadata-clean md)))
+
+  (define-scenario (thin-check try-clear-needs-check-flag skip-mappings-should-clear)
+    "--clear-needs-check is a noop while using --skip-mappings"
+    (with-valid-metadata (md)
+      (set-needs-check-flag md)
+      (assert-metadata-needs-check md)
+      (run-ok (thin-check "--clear-needs-check-flag" "--skip-mappings" md))
+      (assert-metadata-clean md)))
+
+  (define-scenario (thin-check try-clear-needs-check-flag ignore-non-fatal-errors-should-clear)
+    "--clear-needs-check works while using --ignore-non-fatal-errors"
+    (with-valid-metadata (md)
+      (set-needs-check-flag md)
+      (assert-metadata-needs-check md)
+      (run-ok (thin-check "--clear-needs-check-flag" "--ignore-non-fatal-errors" md))
+      (assert-metadata-clean md)))
+
+  (define-scenario (thin-check try-clear-needs-check-flag no-errors-should-clear)
+    "--clear-needs-check works if there's no errors"
+    (with-valid-metadata (md)
+      (set-needs-check-flag md)
+      (assert-metadata-needs-check md)
+      (run-ok (thin-check "--clear-needs-check-flag" md))
+      (assert-metadata-clean md)))
+
+  (define-scenario (thin-check try-clear-needs-check-flag fatal-errors-should-keep)
+    "--clear-needs-check is a noop if there's fatal errors"
+    (with-valid-metadata (md)
+      (set-needs-check-flag md)
+      (tamper-mapping-root md 10)
+      (assert-metadata-needs-check md)
+      (run-fail (thin-check "--clear-needs-check-flag" md))
+      (assert-metadata-needs-check md)))
 
   (define-scenario (thin-check auto-repair)
     "Accepts --auto-repair"
