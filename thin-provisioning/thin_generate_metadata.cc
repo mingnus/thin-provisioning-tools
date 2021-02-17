@@ -161,6 +161,7 @@ thin_generate_metadata_cmd::usage(std::ostream &out) const
 	    << "Options:\n"
 	    << "  {-h|--help}\n"
 	    << "  {--format}\n"
+	    << "  {--open}\n"
 	    << "  {--create-thin} <dev-id>\n"
 	    << "  {--create-snap} <dev-id>\n"
 	    << "  {--delete} <dev-id>\n"
@@ -215,6 +216,7 @@ thin_generate_metadata_cmd::run(int argc, char **argv)
 			break;
 
 		case 2:
+			// do nothing more than commit a new transaction
 			fs.op = flags::METADATA_OP_OPEN;
 			break;
 
