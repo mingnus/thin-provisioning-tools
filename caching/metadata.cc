@@ -33,11 +33,12 @@ namespace {
 
 //----------------------------------------------------------------
 
-metadata::metadata(block_manager::ptr bm, open_type ot, unsigned metadata_version)
+metadata::metadata(block_manager::ptr bm, open_type ot,
+		   unsigned metadata_version, sector_t data_block_size)
 {
 	switch (ot) {
 	case CREATE:
-		create_metadata(bm, metadata_version);
+		create_metadata(bm, metadata_version, data_block_size);
 		break;
 
 	default:
@@ -48,6 +49,21 @@ metadata::metadata(block_manager::ptr bm, open_type ot, unsigned metadata_versio
 metadata::metadata(block_manager::ptr bm)
 {
 	open_metadata(bm);
+}
+
+void
+metadata::resize(block_address nr_cache_blocks)
+{
+	if (nr_cache_blocks < sb_.cache_blocks)
+		throw runtime_error("Shink cache is not supported");
+
+	struct mapping unmapped_value;
+	unmapped_value.oblock_ = 0;
+	unmapped_value.flags_ = 0;
+	mappings_->grow(nr_cache_blocks - sb_.cache_blocks, unmapped_value);
+	sb_.cache_blocks = nr_cache_blocks;
+
+	//TODO: grow the hint array, and set the policy hint size
 }
 
 void
@@ -63,13 +79,16 @@ metadata::commit(bool clean_shutdown)
 void
 metadata::setup_hint_array(size_t width)
 {
+	sb_.policy_hint_size = width;
 	if (width > 0)
 		hints_ = hint_array::ptr(
 			new hint_array(*tm_, width));
 }
 
 void
-metadata::create_metadata(block_manager::ptr bm, unsigned metadata_version)
+metadata::create_metadata(block_manager::ptr bm,
+			  unsigned metadata_version,
+			  sector_t data_block_size)
 {
 	tm_ = open_tm(bm);
 
@@ -87,6 +106,11 @@ metadata::create_metadata(block_manager::ptr bm, unsigned metadata_version)
 
 	if (metadata_version >= 2)
 		dirty_bits_ = pd::bitset::ptr(new pd::bitset(*tm_));
+
+	sb_.version = metadata_version;
+	sb_.data_block_size = data_block_size;
+	sb_.metadata_block_size = MD_BLOCK_SIZE >> SECTOR_SHIFT;
+	// TODO: version dependencies; policy name/version/hint_size; discard block_size/nr_blocks
 }
 
 void
