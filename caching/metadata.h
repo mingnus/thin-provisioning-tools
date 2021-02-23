@@ -26,8 +26,12 @@ namespace caching {
 		typedef block_manager::write_ref write_ref;
 		typedef std::shared_ptr<metadata> ptr;
 
-		metadata(block_manager::ptr bm, open_type ot, unsigned metadata_version = 2); // Create only
+		metadata(block_manager::ptr bm, open_type ot,
+			 unsigned metadata_version = 2,
+			 sector_t data_block_size = 128); // Create only
 		metadata(block_manager::ptr bm);
+
+		void resize(block_address nr_cache_blocks);
 
 		void commit(bool clean_shutdown = true);
 		void setup_hint_array(size_t width);
@@ -43,9 +47,9 @@ namespace caching {
 		persistent_data::bitset::ptr dirty_bits_;
 
 	private:
-		void init_superblock();
-
-		void create_metadata(block_manager::ptr bm, unsigned metadata_version);
+		void create_metadata(block_manager::ptr bm,
+				     unsigned metadata_version,
+				     sector_t data_block_size);
 		void open_metadata(block_manager::ptr bm);
 
 		void commit_space_map();
