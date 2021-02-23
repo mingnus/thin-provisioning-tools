@@ -5,6 +5,7 @@
 
 #include <sstream>
 
+using namespace base;
 using namespace thin_provisioning;
 using namespace superblock_detail;
 using namespace std;
