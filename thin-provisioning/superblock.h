@@ -10,8 +10,8 @@
 
 namespace thin_provisioning {
 	namespace superblock_detail {
-		using namespace base;
-		using namespace persistent_data;
+		using base::le32;
+		using base::le64;
 
 		unsigned const SPACE_MAP_ROOT_SIZE = 128;
 
@@ -89,13 +89,13 @@ namespace thin_provisioning {
 		struct superblock_traits {
 			typedef superblock_disk disk_type;
 			typedef superblock value_type;
-			typedef no_op_ref_counter<superblock> ref_counter;
+			typedef persistent_data::no_op_ref_counter<superblock> ref_counter;
 
 			static void unpack(superblock_disk const &disk, superblock &core);
 			static void pack(superblock const &core, superblock_disk &disk);
 		};
 
-		block_address const SUPERBLOCK_LOCATION = 0;
+		persistent_data::block_address const SUPERBLOCK_LOCATION = 0;
 		uint32_t const SUPERBLOCK_MAGIC = 27022010;
 		uint32_t const METADATA_VERSION = 2;
 

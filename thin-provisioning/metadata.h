@@ -33,10 +33,6 @@
 //----------------------------------------------------------------
 
 namespace thin_provisioning {
-	// FIXME: don't use namespaces in a header
-	using namespace base;
-	using namespace persistent_data;
-
 	typedef uint32_t thin_dev_t;
 
 	//------------------------------------------------
