@@ -126,6 +126,7 @@ TOOLS_SOURCE=\
 	thin-provisioning/thin_trim.cc
 
 DEVTOOLS_SOURCE=\
+	caching/cache.cc \
 	caching/cache_debug.cc \
 	caching/devel_commands.cc \
 	dbg-lib/bitset_block_dumper.cc \
