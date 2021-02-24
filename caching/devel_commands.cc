@@ -9,6 +9,7 @@ void
 caching::register_cache_commands(application &app)
 {
 	app.add_cmd(command::ptr(new cache_debug_cmd));
+	app.add_cmd(command::ptr(new cache_generate_metadata_cmd()));
 }
 
 //----------------------------------------------------------------

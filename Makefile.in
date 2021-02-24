@@ -128,6 +128,7 @@ TOOLS_SOURCE=\
 DEVTOOLS_SOURCE=\
 	caching/cache.cc \
 	caching/cache_debug.cc \
+	caching/cache_generate_metadata.cc \
 	caching/devel_commands.cc \
 	dbg-lib/bitset_block_dumper.cc \
 	dbg-lib/command_interpreter.cc \
