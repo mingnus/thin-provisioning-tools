@@ -110,24 +110,26 @@ impl ReportInner for PBInner {
         //let mut fmt = "".to_string(); //Checking thin metadata".to_string(); //self.title.clone();
         let mut fmt = "Checking thin metadata [{bar:40}] Remaining {eta}, ".to_string();
         fmt.push_str(&txt);
-        self.bar.set_style(
+        println!("{}", fmt);
+        /*self.bar.set_style(
             ProgressStyle::default_bar()
                 .template(&fmt)
                 .progress_chars("=> "),
-        );
+        );*/
     }
 
     fn progress(&mut self, percent: u8) {
-        self.bar.set_position(percent as u64);
-        self.bar.tick();
+        //self.bar.set_position(percent as u64);
+        //self.bar.tick();
     }
 
     fn log(&mut self, txt: &str) {
-        self.bar.println(txt);
+        println!("{}", txt);
+        //self.bar.println(txt);
     }
 
     fn complete(&mut self) {
-        self.bar.finish();
+        //self.bar.finish();
     }
 }
 
