@@ -195,7 +195,7 @@ fn check_mapping_bottom_level(
 
 fn mk_context(engine: Arc<dyn IoEngine + Send + Sync>, report: Arc<Report>) -> Result<Context> {
     let nr_threads = std::cmp::max(8, num_cpus::get() * 2);
-    let pool = ThreadPool::new(nr_threads);
+    let pool = ThreadPool::new(1);
 
     Ok(Context {
         report,
