@@ -63,7 +63,10 @@ metadata::resize(block_address nr_cache_blocks)
 	mappings_->grow(nr_cache_blocks - sb_.cache_blocks, unmapped_value);
 	sb_.cache_blocks = nr_cache_blocks;
 
+	//TODO: grow the dirty bitset
 	//TODO: grow the hint array, and set the policy hint size
+	//TODO: check when kernel resize the hint array.
+	//      now policy hint is written by setup_hint_array()
 }
 
 void

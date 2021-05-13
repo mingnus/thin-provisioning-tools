@@ -226,7 +226,7 @@ superblock_traits::pack(superblock const &sb, superblock_disk &disk)
 		disk.policy_hint_size = to_disk<le32>(core.policy_hint_size);
 	} else {
 		clear_bit(core.incompat_flags, VARIABLE_HINT_SIZE_BIT);
-		disk.policy_hint_size = to_disk<le32>(0u);
+		disk.policy_hint_size = to_disk<le32>(4u);
 	}
 
 	::memcpy(disk.metadata_space_map_root,
