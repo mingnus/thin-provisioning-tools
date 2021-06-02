@@ -259,7 +259,9 @@ namespace local {
 	class simple_emitter : public diff_emitter {
 	public:
 		simple_emitter(indented_stream &out)
-		: diff_emitter(out) {
+		: diff_emitter(out),
+		  vbegin_(0),
+		  vend_(0) {
 		}
 
 		void left_only(uint64_t vbegin, uint64_t dbegin, uint64_t len) {
