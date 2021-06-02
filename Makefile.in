@@ -96,10 +96,7 @@ SOURCE=\
 	persistent-data/transaction_manager.cc \
 	persistent-data/validators.cc \
 	thin-provisioning/commands.cc \
-	thin-provisioning/cache_stream.cc \
-	thin-provisioning/chunk_stream.cc \
 	thin-provisioning/device_tree.cc \
-	thin-provisioning/fixed_chunk_stream.cc \
 	thin-provisioning/human_readable_format.cc \
 	thin-provisioning/mapping_tree.cc \
 	thin-provisioning/metadata.cc \
@@ -107,7 +104,6 @@ SOURCE=\
 	thin-provisioning/metadata_counter.cc \
 	thin-provisioning/metadata_dumper.cc \
 	thin-provisioning/override_emitter.cc \
-	thin-provisioning/pool_stream.cc \
 	thin-provisioning/restore_emitter.cc \
 	thin-provisioning/rmap_visitor.cc \
 	thin-provisioning/superblock.cc \
@@ -124,7 +120,11 @@ SOURCE=\
 	thin-provisioning/xml_format.cc
 
 DEVTOOLS_SOURCE=\
+	thin-provisioning/cache_stream.cc \
+	thin-provisioning/chunk_stream.cc \
 	thin-provisioning/damage_generator.cc \
+	thin-provisioning/fixed_chunk_stream.cc \
+	thin-provisioning/pool_stream.cc \
 	thin-provisioning/thin_journal.cc \
 	thin-provisioning/thin_journal_check.cc \
 	thin-provisioning/thin_ll_dump.cc \
@@ -374,4 +374,3 @@ test: functional-test unit-test
 endif
 
 -include $(DEPEND_FILES)
-
