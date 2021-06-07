@@ -22,7 +22,7 @@
                                (length . ,nr-mappings)
                                (time . 1)))))
 
-  (define (generate-xml max-thins max-mappings)
+  (define (generate-xml max-thins max-mappings . needs-check)
     (let ((nr-thins ((make-uniform-generator 1 max-thins)))
           (nr-mappings-g (make-uniform-generator (div-down max-mappings 2)
                                                  max-mappings)))
@@ -30,7 +30,7 @@
        (tag 'superblock `((uuid . "")
                          (time . 1)
                          (transaction . 1)
-                         (flags . 0)
+                         (flags . ,(if (null? needs-check) 0 (car needs-check)))
                          (version . 2)
                          (data-block-size . 128)
                          (nr-data-blocks . ,(apply + nr-mappings)))

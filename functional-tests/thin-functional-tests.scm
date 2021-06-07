@@ -12,6 +12,7 @@
     (process)
     (scenario-string-constants)
     (temp-file)
+    (thin metadata)
     (thin xml)
     (srfi s8 receive))
 
@@ -28,6 +29,12 @@
     (syntax-rules ()
       ((_ (v) b1 b2 ...)
        (with-temp-file-containing ((v "thin.xml" (fmt #f (generate-xml 10 1000))))
+                                  b1 b2 ...))))
+
+  (define-syntax with-needs-check-thin-xml
+    (syntax-rules ()
+      ((_ (v) b1 b2 ...)
+       (with-temp-file-containing ((v "thin.xml" (fmt #f (generate-xml 10 1000 1))))
                                   b1 b2 ...))))
 
   (define-syntax with-valid-metadata
@@ -62,6 +69,28 @@
        (with-valid-metadata (md)
          (damage-superblock md)
          b1 b2 ...))))
+
+  (define superblock-salt 160774)
+  (define (set-needs-check-flag md)
+    (with-bcache (cache md 1)
+      (with-block (b cache 0 (get-flags dirty))
+        (let ((sb (block->superblock b)))
+          (ftype-set! ThinSuperblock (flags) sb 1)
+          ;;;;;; Update the csum manually since the block validator for ft-lib is not ready
+          (let ((csum (checksum-block b (ftype-sizeof unsigned-32) superblock-salt)))
+            (ftype-set! ThinSuperblock (csum) sb csum))))))
+
+  (define (get-superblock-flags md)
+    (with-bcache (cache md 1)
+      (with-block (b cache 0 (get-flags))
+        (let ((sb (block->superblock b)))
+          (ftype-ref ThinSuperblock (flags) sb)))))
+
+  (define (assert-metadata-needs-check md)
+    (assert-equal (get-superblock-flags md) 1))
+
+  (define (assert-metadata-clean md)
+    (assert-equal (get-superblock-flags md) 0))
 
   ;; We have to export something that forces all the initialisation expressions
   ;; to run.
@@ -173,6 +202,13 @@
   ;;;-----------------------------------------------------------
   ;;; thin_restore scenarios
   ;;;-----------------------------------------------------------
+  (define-scenario (thin-restore clear-needs-check-flag)
+    "thin_restore should clear the needs-check flag"
+    (with-empty-metadata (md)
+      (with-needs-check-thin-xml (xml)
+        (run-ok-rcv (stdout _) (thin-restore "-i" xml "-o" md "-q")
+          (assert-eof stdout)))
+      (assert-metadata-clean md)))
 
   (define-scenario (thin-restore print-version-v)
     "print help (-V)"
@@ -439,6 +475,16 @@
   ;;;-----------------------------------------------------------
   ;;; thin_repair scenarios
   ;;;-----------------------------------------------------------
+  (define-scenario (thin-repair clear-needs-check-flag)
+    "thin_repair should clear the needs-check flag"
+    (with-valid-metadata (md1)
+      (set-needs-check-flag md1)
+      (assert-metadata-needs-check md1)
+      (with-empty-metadata (md2)
+        (run-ok-rcv (stdout stderr) (thin-repair "-i" md1 "-o" md2)
+          (assert-eof stderr))
+        (assert-metadata-clean md2))))
+
   (define-scenario (thin-repair dont-repair-xml)
     "Fails gracefully if run on XML rather than metadata"
     (with-thin-xml (xml)

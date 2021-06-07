@@ -201,8 +201,10 @@ static int engine_issue(struct io_engine *e, int fd, enum dir d,
 
 	cb_array[0] = &cb->cb;
 	r = io_submit(e->aio_context, 1, cb_array);
-	if (r < 0)
+	if (r < 0) {
+		warn("io_submit failed, ret=%d\n", r);
 		cb_free(e->cbs, cb);
+	}
 
 	return r;
 }
@@ -219,7 +221,7 @@ static int engine_wait(struct io_engine *e, struct timespec *ts, complete_fn fn)
 	memset(&event, 0, sizeof(event));
 	r = io_getevents(e->aio_context, 1, MAX_IO, event, ts);
 	if (r < 0) {
-		warn("io_getevents failed");
+		warn("io_getevents failed, ret=%d\n", r);
 		return r;
 	}
 
@@ -514,12 +516,22 @@ static void relink(struct block *b)
  */
 static int issue_low_level(struct block *b, enum dir d)
 {
+	int r;
 	struct bcache *cache = b->cache;
 	sector_t sb = b->index * cache->block_sectors;
 	sector_t se = sb + cache->block_sectors;
 	set_flags(b, BF_IO_PENDING);
+	cache->nr_io_pending++;
+	list_add_tail(&b->list, &cache->io_pending);
 
-	return engine_issue(cache->engine, cache->fd, d, sb, se, b->data, b);
+	r = engine_issue(cache->engine, cache->fd, d, sb, se, b->data, b);
+	if (r < 0) {
+		list_del(&b->list);
+		cache->nr_io_pending--;
+		clear_flags(b, BF_IO_PENDING);
+		return r;
+	}
+	return 0;
 }
 
 static void issue_read(struct block *b)
@@ -709,7 +721,7 @@ struct bcache *bcache_simple(const char *path, unsigned nr_cache_blocks)
 	int r;
 	struct stat info;
 	struct bcache *cache;
-	int fd = open(path, O_DIRECT | O_EXCL | O_RDONLY);
+	int fd = open(path, O_DIRECT | O_EXCL | O_RDWR);
 	uint64_t s;
 
 	if (fd < 0) {
