@@ -14,7 +14,8 @@
     (temp-file)
     (thin metadata)
     (thin xml)
-    (srfi s8 receive))
+    (srfi s8 receive)
+    (xml))
 
   (define-tool thin-check)
   (define-tool thin-delta)
@@ -95,6 +96,32 @@
   ;; We have to export something that forces all the initialisation expressions
   ;; to run.
   (define (register-thin-tests) #t)
+
+  ;; XML of metadata with empty thins
+  (define xml-with-empty-thins
+    (fmt #f
+      (tag 'superblock `((uuid . "")
+                         (time . 0)
+                         (transaction . 1)
+                         (flags . 0)
+                         (version . 2)
+                         (data-block-size . 128)
+                         (nr-data-blocks . 1024))
+        (tag 'device `((dev-id . 1)
+                       (mapped-blocks . 16)
+                       (transaction . 0)
+                       (creation-time . 0)
+                       (snap-time . 0))
+          (tag 'range-mapping  `((origin-begin . 0)
+                                 (data-begin . 0)
+                                 (length . 16)
+                                 (time . 0))))
+        (tag 'device `((dev-id . 2)
+                       (mapped-blocks . 0)
+                       (transaction . 0)
+                       (creation-time . 0)
+                       (snap-time . 0))
+          " "))))
 
   ;;;-----------------------------------------------------------
   ;;; thin_check scenarios
@@ -376,6 +403,17 @@
       (run-fail-rcv (_ stderr) (thin-dump "--repair" "--transaction-id=5" "--data-block-size=128" md)
         (assert-matches ".*nr data blocks.*" stderr))))
 
+  (define-scenario (thin-dump repair-superblock with-empty-devices)
+    "metadata with empty devices could be recovered"
+    (with-temp-file-sized ((md "thin.bin" (meg 4)))
+      (with-temp-file-containing ((xml "thin.xml" xml-with-empty-thins))
+        (run-ok (thin-restore "-i" xml "-o" md)))
+      (run-ok-rcv (expected-xml _) (thin-dump md)
+        (damage-superblock md)
+        (run-ok-rcv (repaired-xml stderr) (thin-dump "--repair" "--transaction-id=1" "--data-block-size=128" "--nr-data-blocks=1024" md)
+          (assert-eof stderr)
+          (assert-equal expected-xml repaired-xml)))))
+
   ;;;-----------------------------------------------------------
   ;;; thin_rmap scenarios
   ;;;-----------------------------------------------------------
@@ -572,6 +610,19 @@
         (run-fail-rcv (_ stderr) (thin-repair "--transaction-id=5" "--data-block-size=128" "-i" md1 "-o" md2)
           (assert-matches ".*nr data blocks.*" stderr)))))
 
+  (define-scenario (thin-repair superblock with-empty-devices)
+    "metadata with empty devices could be recovered"
+    (with-temp-file-sized ((md1 "thin.bin" (meg 4)))
+      (with-temp-file-containing ((xml "thin.xml" xml-with-empty-thins))
+        (run-ok (thin-restore "-i" xml "-o" md1)))
+      (run-ok-rcv (expected-xml _) (thin-dump md1)
+        (damage-superblock md1)
+        (with-empty-metadata (md2)
+          (run-ok-rcv (_ stderr) (thin-repair "--transaction-id=1" "--data-block-size=128" "--nr-data-blocks=1024" "-i" md1 "-o" md2)
+            (assert-eof stderr))
+          (run-ok-rcv (repaired-xml stderr) (thin-dump md2)
+            (assert-eof stderr)
+            (assert-equal expected-xml repaired-xml))))))
 
   ;;;-----------------------------------------------------------
   ;;; thin_metadata_pack scenarios
