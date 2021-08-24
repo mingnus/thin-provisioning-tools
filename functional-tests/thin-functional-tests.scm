@@ -81,6 +81,15 @@
           (let ((csum (checksum-block b (ftype-sizeof unsigned-32) superblock-salt)))
             (ftype-set! ThinSuperblock (csum) sb csum))))))
 
+  (define (tamper-mapping-root md mapping-root)
+    (with-bcache (cache md 1)
+      (with-block (b cache 0 (get-flags dirty))
+        (let ((sb (block->superblock b)))
+          (ftype-set! ThinSuperblock (data-mapping-root) sb mapping-root)
+          ;;;;;; Update the csum manually since the block validator for ft-lib is not ready
+          (let ((csum (checksum-block b (ftype-sizeof unsigned-32) superblock-salt)))
+            (ftype-set! ThinSuperblock (csum) sb csum))))))
+
   (define (get-superblock-flags md)
     (with-bcache (cache md 1)
       (with-block (b cache 0 (get-flags))
@@ -96,6 +105,26 @@
   ;; We have to export something that forces all the initialisation expressions
   ;; to run.
   (define (register-thin-tests) #t)
+
+  ;; An deterministic simple XML for testing
+  (define simple-thin-xml
+    (fmt #f
+      (tag 'superblock `((uuid . "")
+                         (time . 0)
+                         (transaction . 1)
+                         (flags . 0)
+                         (version . 2)
+                         (data-block-size . 128)
+                         (nr-data-blocks . 1024))
+        (tag 'device `((dev-id . 1)
+                       (mapped-blocks . 16)
+                       (transaction . 0)
+                       (creation-time . 0)
+                       (snap-time . 0))
+          (tag 'range-mapping  `((origin-begin . 0)
+                                 (data-begin . 0)
+                                 (length . 16)
+                                 (time . 0)))))))
 
   ;; XML of metadata with empty thins
   (define xml-with-empty-thins
@@ -414,6 +443,18 @@
           (assert-eof stderr)
           (assert-equal expected-xml repaired-xml)))))
 
+  (define-scenario (thin-dump repair-superblock inconsistent-device-ids)
+    "metadata with inconsistent device ids should be repaired"
+    (with-temp-file-sized ((md "thin.bin" (meg 4)))
+      (with-temp-file-containing ((xml "thin.xml" simple-thin-xml))
+        (run-ok (thin-restore "-i" xml "-o" md)))
+      (run-ok-rcv (expected-xml _) (thin-dump md)
+        ;;;;;; simulate multiple activation by replacing the mapping root with a bottom-level leaf
+        (tamper-mapping-root md 10)
+        (run-ok-rcv (repaired-xml stderr) (thin-dump "--repair" md)
+          (assert-eof stderr)
+          (assert-equal expected-xml repaired-xml)))))
+
   ;;;-----------------------------------------------------------
   ;;; thin_rmap scenarios
   ;;;-----------------------------------------------------------
@@ -619,6 +660,21 @@
         (damage-superblock md1)
         (with-empty-metadata (md2)
           (run-ok-rcv (_ stderr) (thin-repair "--transaction-id=1" "--data-block-size=128" "--nr-data-blocks=1024" "-i" md1 "-o" md2)
+            (assert-eof stderr))
+          (run-ok-rcv (repaired-xml stderr) (thin-dump md2)
+            (assert-eof stderr)
+            (assert-equal expected-xml repaired-xml))))))
+
+  (define-scenario (thin-repair superblock inconsistent-device-ids)
+    "metadata with inconsistent device ids should be repaired"
+    (with-temp-file-sized ((md1 "thin.bin" (meg 4)))
+      (with-temp-file-containing ((xml "thin.xml" simple-thin-xml))
+        (run-ok (thin-restore "-i" xml "-o" md1)))
+      (run-ok-rcv (expected-xml _) (thin-dump md1)
+        ;;;;;; simulate multiple activation by replacing the mapping root with a bottom-level leaf
+        (tamper-mapping-root md1 10)
+        (with-empty-metadata (md2)
+          (run-ok-rcv (_ stderr) (thin-repair "-i" md1 "-o" md2)
             (assert-eof stderr))
           (run-ok-rcv (repaired-xml stderr) (thin-dump md2)
             (assert-eof stderr)
