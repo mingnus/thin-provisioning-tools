@@ -37,6 +37,11 @@ pub const CACHE_DUMP: &str = path_to!("cache_dump");
 pub const CACHE_REPAIR: &str = path_to!("cache_repair");
 pub const CACHE_RESTORE: &str = path_to!("cache_restore");
 
+pub const ERA_CHECK: &str = path_to!("era_check");
+pub const ERA_DUMP: &str = path_to!("era_dump");
+pub const ERA_REPAIR: &str = path_to!("era_repair");
+pub const ERA_RESTORE: &str = path_to!("era_restore");
+
 pub const THIN_CHECK: &str = path_to!("thin_check");
 pub const THIN_DELTA: &str = path_to_cpp!("thin_delta"); // TODO: rust version
 pub const THIN_DUMP: &str = path_to!("thin_dump");
