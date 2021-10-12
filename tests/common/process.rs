@@ -60,7 +60,11 @@ where
         .stderr_capture();
     let output = command.unchecked().run()?;
     assert!(!output.status.success());
-    let stderr = std::str::from_utf8(&output.stderr[..]).unwrap().to_string();
+    let stderr = std::str::from_utf8(&output.stderr[..])
+        .unwrap()
+        .trim_end_matches(|c| c == '\n' || c == '\r')
+        .to_string();
+
     Ok(stderr)
 }
 
