@@ -321,6 +321,11 @@ impl NodeCollector {
             }
         }
 
+        // it's a valid top-level leaf, so mark the children as non-orphan
+        for b in values {
+            self.referenced.set(*b as usize, true);
+        }
+
         Ok(NodeInfo::Dev(info))
     }
 
