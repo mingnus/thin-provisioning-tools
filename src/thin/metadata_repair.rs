@@ -96,6 +96,7 @@ struct MappingsInfo {
     time_counts: BTreeMap<u32, u32>,
     age: u32,
     highest_mapped_data_block: u64,
+    height: u8, // u8 is sufficient for a btree of fanout 256
     pushed: bool,
 }
 
@@ -109,6 +110,7 @@ impl MappingsInfo {
             time_counts: BTreeMap::<u32, u32>::new(),
             age: 0,
             highest_mapped_data_block: 0,
+            height: 0,
             pushed: false,
         }
     }
@@ -129,6 +131,7 @@ impl MappingsInfo {
             self.highest_mapped_data_block,
             child.highest_mapped_data_block,
         );
+        self.height = std::cmp::max(self.height, child.height + 1);
 
         Ok(())
     }
@@ -305,10 +308,14 @@ impl NodeCollector {
             info.key_low = keys[0];
             info.key_high = keys[keys.len() - 1];
         }
+        println!("treat {} as a top-level leaf", header.block);
 
+        let mut is_valid = true;
         for b in values {
-            let child = self.get_info(*b)?; // subtree root
-            if let NodeInfo::Mappings(ref child) = child {
+            self.referenced.set(*b as usize, true); // debug
+
+            let child = self.get_info(*b); // subtree root
+            if let Ok(NodeInfo::Mappings(ref child)) = child {
                 info.nr_mappings += child.nr_mappings;
                 merge_time_counts(&mut info.time_counts, &child.time_counts)?;
                 info.age = std::cmp::max(info.age, child.age);
@@ -317,8 +324,13 @@ impl NodeCollector {
                     child.highest_mapped_data_block,
                 );
             } else {
-                return Err(anyhow!("not a data mapping subtree root"));
+                println!("  {} is not a subtree root", *b);
+                is_valid = false; // debug
             }
+        }
+
+        if !is_valid {
+            return Err(anyhow!("not a data mapping subtree root"));
         }
 
         // it's a valid top-level leaf, so mark the children as non-orphan
@@ -706,10 +718,78 @@ impl NodeCollector {
         self.log_results(&dev_roots, &details_roots, &pairs);
 
         if pairs.is_empty() {
+            self.find_subtrees()?;
             return Err(anyhow!("no compatible roots found"));
         }
 
         self.to_found_roots(pairs[0].0, pairs[0].1)
+    }
+
+    //-------------------------------------
+
+    fn cmp_mappings(m1: &&MappingsInfo, m2: &&MappingsInfo) -> Ordering {
+        // TODO: take key_high into account
+        if m1.height > m2.height {
+            Ordering::Less
+        } else if m1.height < m2.height {
+            Ordering::Greater
+        } else if m1.key_low < m2.key_low {
+            Ordering::Less
+        } else if m1.key_low > m2.key_low {
+            Ordering::Greater
+        } else if m1.key_high < m2.key_high {
+            Ordering::Less
+        } else if m1.key_high > m2.key_high {
+            Ordering::Greater
+        } else if m1.nr_mappings > m2.nr_mappings {
+            Ordering::Less
+        } else if m1.nr_mappings < m2.nr_mappings {
+            Ordering::Greater
+        } else {
+            Ordering::Equal
+        }
+    }
+
+    fn gather_subtrees(&self) -> Result<Vec<&MappingsInfo>> {
+        let mut subtrees = Vec::<&MappingsInfo>::new();
+
+        for b in 0..self.nr_blocks {
+            // skip non-root blocks
+            if self.referenced.contains(b as usize) {
+                continue;
+            }
+
+            // skip blocks we're not interested in
+            let info = self.read_info(b as u64);
+            if info.is_err() {
+                continue;
+            }
+            let info = info.unwrap();
+
+            if let NodeInfo::Mappings(m) = info {
+                subtrees.push(m);
+            }
+        }
+
+        subtrees.sort_by(Self::cmp_mappings);
+        Ok(subtrees)
+    }
+
+    fn log_subtrees(&self, subtrees: &[&MappingsInfo]) {
+        self.report
+            .info(&format!("\norphan subtrees ({}):", subtrees.len()));
+        for root in subtrees {
+            self.report.info(&format!(
+                "b={}, height={}, key_low={}, key_high={}, nr_mappings={}, age={}",
+                root._b, root.height, root.key_low, root.key_high, root.nr_mappings, root.age
+            ));
+        }
+    }
+
+    fn find_subtrees(&self) -> Result<()> {
+        let subtree_roots = self.gather_subtrees()?;
+        self.log_subtrees(&subtree_roots[..]);
+        Ok(())
     }
 }
 
