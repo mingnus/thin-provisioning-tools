@@ -26,6 +26,7 @@ pub mod pdata;
 pub mod report;
 pub mod shrink;
 pub mod thin;
+pub mod units;
 pub mod version;
 pub mod write_batcher;
 pub mod xml;
