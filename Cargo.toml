@@ -32,11 +32,18 @@ tempfile = "3.3"
 threadpool = "1.8"
 thiserror = "1.0"
 
+[patch."https://github.com/mingnus/thinp_dev.git"]
+thinp = { path = "."}
+
 [dev-dependencies]
 json = "0.12"
 quickcheck = "0.9"
 quickcheck_macros = "0.9"
-thinp_dev = { path = "../thinp_dev" }
+thinp_dev = { git = "https://github.com/mingnus/thinp_dev.git" }
 
 [profile.release]
 debug = true
+
+# 'replace' is deprecated. Use 'patch' instead
+#[replace]
+#"thinp:0.1.0" = { path = "." }
