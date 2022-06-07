@@ -215,13 +215,19 @@ fn mk_context(opts: &ThinCheckOptions) -> Result<Context> {
 
     let engine: Arc<dyn IoEngine + Send + Sync> = if opts.async_io {
         Arc::new(
-            AsyncIoEngine::new_with(opts.input, MAX_CONCURRENT_IO, writable, exclusive)
-                .expect("unable to open input file"),
+            AsyncIoEngine::new_with(
+                opts.input,
+                BLOCK_SIZE,
+                MAX_CONCURRENT_IO,
+                writable,
+                exclusive,
+            )
+            .expect("unable to open input file"),
         )
     } else {
         let nr_threads = std::cmp::max(8, num_cpus::get() * 2);
         Arc::new(
-            SyncIoEngine::new_with(opts.input, nr_threads, writable, exclusive)
+            SyncIoEngine::new_with(opts.input, BLOCK_SIZE, nr_threads, writable, exclusive)
                 .expect("unable to open input file"),
         )
     };

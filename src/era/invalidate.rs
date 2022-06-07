@@ -8,7 +8,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::era::superblock::*;
 use crate::era::writeset::*;
-use crate::io_engine::{AsyncIoEngine, IoEngine, SyncIoEngine};
+use crate::io_engine::*;
 use crate::math::div_up;
 use crate::pdata::array::{self, value_err, ArrayBlock};
 use crate::pdata::array_walker::*;
@@ -243,6 +243,7 @@ fn mk_context(opts: &EraInvalidateOptions) -> anyhow::Result<Context> {
     let engine: Arc<dyn IoEngine + Send + Sync> = if opts.async_io {
         Arc::new(AsyncIoEngine::new_with(
             opts.input,
+            BLOCK_SIZE,
             MAX_CONCURRENT_IO,
             false,
             !opts.use_metadata_snap,
@@ -251,6 +252,7 @@ fn mk_context(opts: &EraInvalidateOptions) -> anyhow::Result<Context> {
         let nr_threads = std::cmp::max(8, num_cpus::get() * 2);
         Arc::new(SyncIoEngine::new_with(
             opts.input,
+            BLOCK_SIZE,
             nr_threads,
             false,
             !opts.use_metadata_snap,

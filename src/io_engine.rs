@@ -24,16 +24,25 @@ const ALIGN: usize = 4096;
 pub struct Block {
     pub loc: u64,
     data: *mut u8,
+    len: usize,
 }
 
 impl Block {
     // Creates a new block that corresponds to the given location.  The
     // memory is not initialised.
     pub fn new(loc: u64) -> Block {
-        let layout = Layout::from_size_align(BLOCK_SIZE, ALIGN).unwrap();
+        Block::with_size(loc, BLOCK_SIZE)
+    }
+
+    pub fn with_size(loc: u64, len: usize) -> Block {
+        let layout = Layout::from_size_align(len, ALIGN).unwrap();
         let ptr = unsafe { alloc(layout) };
         assert!(!ptr.is_null(), "out of memory");
-        Block { loc, data: ptr }
+        Block {
+            loc,
+            data: ptr,
+            len,
+        }
     }
 
     pub fn zeroed(loc: u64) -> Block {
@@ -43,19 +52,19 @@ impl Block {
     }
 
     pub fn get_data<'a>(&self) -> &'a mut [u8] {
-        unsafe { std::slice::from_raw_parts_mut::<'a>(self.data, BLOCK_SIZE) }
+        unsafe { std::slice::from_raw_parts_mut::<'a>(self.data, self.len) }
     }
 
     pub fn zero(&mut self) {
         unsafe {
-            std::ptr::write_bytes(self.data, 0, BLOCK_SIZE);
+            std::ptr::write_bytes(self.data, 0, self.len);
         }
     }
 }
 
 impl Drop for Block {
     fn drop(&mut self) {
-        let layout = Layout::from_size_align(BLOCK_SIZE, ALIGN).unwrap();
+        let layout = Layout::from_size_align(self.len, ALIGN).unwrap();
         unsafe {
             dealloc(self.data, layout);
         }
@@ -79,14 +88,16 @@ pub trait IoEngine {
     fn write_many(&self, blocks: &[Block]) -> Result<Vec<Result<()>>>;
 }
 
-fn get_nr_blocks(path: &Path) -> io::Result<u64> {
-    Ok(file_utils::file_size(path)? / (BLOCK_SIZE as u64))
+fn get_nr_blocks(path: &Path, block_size: u64) -> io::Result<u64> {
+    Ok(file_utils::file_size(path)? / block_size)
 }
 
 //------------------------------------------
 
 pub struct SyncIoEngine {
+    block_size: usize,
     nr_blocks: u64,
+    offset: u64,
     files: Mutex<Vec<File>>,
     cvar: Condvar,
 }
@@ -146,16 +157,28 @@ impl SyncIoEngine {
     }
 
     pub fn new(path: &Path, nr_files: usize, writable: bool) -> Result<SyncIoEngine> {
-        SyncIoEngine::new_with(path, nr_files, writable, true)
+        SyncIoEngine::new_with(path, BLOCK_SIZE, nr_files, writable, true)
     }
 
     pub fn new_with(
         path: &Path,
+        block_size: usize,
         nr_files: usize,
         writable: bool,
         excl: bool,
     ) -> Result<SyncIoEngine> {
-        let nr_blocks = get_nr_blocks(path)?; // check file mode before opening it
+        SyncIoEngine::with_offset(path, block_size, 0, nr_files, writable, excl)
+    }
+
+    pub fn with_offset(
+        path: &Path,
+        block_size: usize,
+        offset: u64,
+        nr_files: usize,
+        writable: bool,
+        excl: bool,
+    ) -> Result<SyncIoEngine> {
+        let nr_blocks = get_nr_blocks(path, block_size as u64)?; // check file mode before opening it
         let mut files = Vec::with_capacity(nr_files);
         let file = SyncIoEngine::open_file(path, writable, excl)?;
         for _n in 0..nr_files - 1 {
@@ -164,7 +187,9 @@ impl SyncIoEngine {
         files.push(file);
 
         Ok(SyncIoEngine {
+            block_size,
             nr_blocks,
+            offset,
             files: Mutex::new(files),
             cvar: Condvar::new(),
         })
@@ -186,14 +211,14 @@ impl SyncIoEngine {
         self.cvar.notify_one();
     }
 
-    fn read_(input: &mut File, loc: u64) -> Result<Block> {
-        let b = Block::new(loc);
-        input.read_exact_at(b.get_data(), b.loc * BLOCK_SIZE as u64)?;
+    fn read_(input: &mut File, offset: u64, loc: u64, len: usize) -> Result<Block> {
+        let b = Block::with_size(loc, len);
+        input.read_exact_at(b.get_data(), offset + b.loc * len as u64)?;
         Ok(b)
     }
 
-    fn write_(output: &mut File, b: &Block) -> Result<()> {
-        output.write_all_at(b.get_data(), b.loc * BLOCK_SIZE as u64)?;
+    fn write_(output: &mut File, offset: u64, b: &Block) -> Result<()> {
+        output.write_all_at(b.get_data(), offset + b.loc * b.len as u64)?;
         Ok(())
     }
 }
@@ -208,27 +233,32 @@ impl IoEngine for SyncIoEngine {
     }
 
     fn read(&self, loc: u64) -> Result<Block> {
-        SyncIoEngine::read_(&mut self.get(), loc)
+        SyncIoEngine::read_(&mut self.get(), self.offset, loc, self.block_size)
     }
 
     fn read_many(&self, blocks: &[u64]) -> Result<Vec<Result<Block>>> {
         let mut input = self.get();
         let mut bs = Vec::new();
         for b in blocks {
-            bs.push(SyncIoEngine::read_(&mut input, *b));
+            bs.push(SyncIoEngine::read_(
+                &mut input,
+                self.offset,
+                *b,
+                self.block_size,
+            ));
         }
         Ok(bs)
     }
 
     fn write(&self, b: &Block) -> Result<()> {
-        SyncIoEngine::write_(&mut self.get(), b)
+        SyncIoEngine::write_(&mut self.get(), self.offset, b)
     }
 
     fn write_many(&self, blocks: &[Block]) -> Result<Vec<Result<()>>> {
         let mut output = self.get();
         let mut bs = Vec::new();
         for b in blocks {
-            bs.push(SyncIoEngine::write_(&mut output, b));
+            bs.push(SyncIoEngine::write_(&mut output, self.offset, b));
         }
         Ok(bs)
     }
@@ -239,6 +269,7 @@ impl IoEngine for SyncIoEngine {
 pub struct AsyncIoEngine_ {
     queue_len: u32,
     ring: IoUring,
+    block_size: usize,
     nr_blocks: u64,
     fd: RawFd,
     input: Arc<File>,
@@ -250,16 +281,17 @@ pub struct AsyncIoEngine {
 
 impl AsyncIoEngine {
     pub fn new(path: &Path, queue_len: u32, writable: bool) -> Result<AsyncIoEngine> {
-        AsyncIoEngine::new_with(path, queue_len, writable, true)
+        AsyncIoEngine::new_with(path, BLOCK_SIZE, queue_len, writable, true)
     }
 
     pub fn new_with(
         path: &Path,
+        block_size: usize,
         queue_len: u32,
         writable: bool,
         excl: bool,
     ) -> Result<AsyncIoEngine> {
-        let nr_blocks = get_nr_blocks(path)?; // check file mode earlier
+        let nr_blocks = get_nr_blocks(path, block_size as u64)?; // check file mode earlier
         let mut flags = libc::O_DIRECT;
         if excl {
             flags |= libc::O_EXCL;
@@ -274,6 +306,7 @@ impl AsyncIoEngine {
             inner: Mutex::new(AsyncIoEngine_ {
                 queue_len,
                 ring: IoUring::new(queue_len)?,
+                block_size,
                 nr_blocks,
                 fd: input.as_raw_fd(),
                 input: Arc::new(input),
@@ -383,6 +416,7 @@ impl Clone for AsyncIoEngine {
         AsyncIoEngine {
             inner: Mutex::new(AsyncIoEngine_ {
                 queue_len: inner.queue_len,
+                block_size: inner.block_size,
                 ring: IoUring::new(inner.queue_len).expect("couldn't create uring"),
                 nr_blocks: inner.nr_blocks,
                 fd: inner.fd,
