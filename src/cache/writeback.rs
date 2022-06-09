@@ -478,7 +478,7 @@ fn copy_dirty_blocks_async(
     Ok((err, stats, dirty_ablocks, cleaned_blocks))
 }
 
-fn copy_dirty_blocks_sync(
+/*fn copy_dirty_blocks_sync(
     ctx: &Context,
     sb: &Superblock,
     opts: &CacheWritebackOptions,
@@ -506,6 +506,44 @@ fn copy_dirty_blocks_sync(
     );
     let w = ArrayWalker::new(ctx.engine.clone(), true);
     let err = w.walk(&mut cv, sb.mapping_root).is_err();
+    let (stats, dirty_ablocks, cleaned_blocks) = cv.complete()?;
+
+    Ok((err, stats, dirty_ablocks, cleaned_blocks))
+}*/
+
+fn copy_dirty_blocks_sync(
+    ctx: &Context,
+    sb: &Superblock,
+    opts: &CacheWritebackOptions,
+) -> anyhow::Result<(bool, CopyStats, FixedBitSet, FixedBitSet)> {
+    use crate::dump_utils::walk_array_blocks;
+
+    if sb.version > 2 {
+        return Err(anyhow!("unsupported metadata version: {}", sb.version));
+    }
+
+    let copier = SyncCopier::new(
+        opts.fast_dev,
+        opts.origin_dev,
+        sb.data_block_size,
+        opts.fast_dev_offset.unwrap_or(0),
+        opts.origin_dev_offset.unwrap_or(0),
+    )?;
+
+    let nr_metadata_blocks = unpack::<SMRoot>(&sb.metadata_sm_root[0..])?.nr_blocks;
+    let indicator = DirtyIndicator::new(ctx.engine.clone(), sb);
+    let cv = SyncCopyVisitor::new(
+        copier,
+        indicator,
+        sb.flags.clean_shutdown,
+        nr_metadata_blocks,
+        sb.cache_blocks,
+    );
+
+    let ablocks = collect_array_blocks_with_path(ctx.engine.clone(), true, sb.mapping_root)?;
+
+    let err = walk_array_blocks(ctx.engine.clone(), ablocks, &cv).is_err();
+
     let (stats, dirty_ablocks, cleaned_blocks) = cv.complete()?;
 
     Ok((err, stats, dirty_ablocks, cleaned_blocks))
