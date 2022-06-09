@@ -3,6 +3,7 @@ use fixedbitset::FixedBitSet;
 use std::io::{self, Cursor};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use threadpool::ThreadPool;
 
 use crate::cache::mapping::*;
 use crate::cache::superblock::*;
@@ -13,6 +14,7 @@ use crate::pdata::array::{self, *};
 use crate::pdata::array_walker::*;
 use crate::pdata::bitset::{read_bitset, CheckedBitSet};
 use crate::pdata::btree_walker::btree_to_map;
+use crate::pdata::space_map::RestrictedSpaceMap;
 use crate::pdata::space_map_common::SMRoot;
 use crate::pdata::unpack::unpack;
 use crate::report::Report;
@@ -516,8 +518,6 @@ fn copy_dirty_blocks_sync(
     sb: &Superblock,
     opts: &CacheWritebackOptions,
 ) -> anyhow::Result<(bool, CopyStats, FixedBitSet, FixedBitSet)> {
-    use crate::dump_utils::walk_array_blocks;
-
     if sb.version > 2 {
         return Err(anyhow!("unsupported metadata version: {}", sb.version));
     }
@@ -532,21 +532,35 @@ fn copy_dirty_blocks_sync(
 
     let nr_metadata_blocks = unpack::<SMRoot>(&sb.metadata_sm_root[0..])?.nr_blocks;
     let indicator = DirtyIndicator::new(ctx.engine.clone(), sb);
-    let cv = SyncCopyVisitor::new(
+    let cv = Arc::new(SyncCopyVisitor::new(
         copier,
         indicator,
         sb.flags.clean_shutdown,
         nr_metadata_blocks,
         sb.cache_blocks,
-    );
+    ));
 
-    let ablocks = collect_array_blocks_with_path(ctx.engine.clone(), true, sb.mapping_root)?;
+    let nr_threads = std::cmp::max(8, num_cpus::get() * 2);
+    let pool = ThreadPool::new(nr_threads);
+    let sm = Arc::new(Mutex::new(RestrictedSpaceMap::new(
+        ctx.engine.get_nr_blocks(),
+    )));
+    let err = walk_array_threaded(
+        ctx.engine.clone(),
+        cv.clone(),
+        &pool,
+        sm,
+        sb.mapping_root,
+        true,
+    )
+    .is_err();
 
-    let err = walk_array_blocks(ctx.engine.clone(), ablocks, &cv).is_err();
-
-    let (stats, dirty_ablocks, cleaned_blocks) = cv.complete()?;
-
-    Ok((err, stats, dirty_ablocks, cleaned_blocks))
+    if let Ok(t) = Arc::try_unwrap(cv) {
+        let (stats, dirty_ablocks, cleaned_blocks) = t.complete()?;
+        Ok((err, stats, dirty_ablocks, cleaned_blocks))
+    } else {
+        Err(anyhow!("cannot terminate threads"))
+    }
 }
 
 fn report_stats(report: Arc<Report>, stats: &CopyStats) {
