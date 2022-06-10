@@ -1,12 +1,14 @@
 use std::io;
 use std::path::Path;
+use std::sync::Arc;
 
 use crate::copier::CopyOp;
 use crate::io_engine::*;
 
+#[derive(Clone)]
 pub struct SyncCopier {
-    input: SyncIoEngine,
-    output: SyncIoEngine,
+    input: Arc<SyncIoEngine>,
+    output: Arc<SyncIoEngine>,
 }
 
 // FIXME: used byte-based units
@@ -26,16 +28,29 @@ impl SyncCopier {
         }
 
         let bs = (block_size << SECTOR_SHIFT) as usize;
-        let input =
-            SyncIoEngine::with_offset(src, bs, src_offset << SECTOR_SHIFT, 16, false, true)?;
-        let output =
-            SyncIoEngine::with_offset(dest, bs, dest_offset << SECTOR_SHIFT, 16, true, true)?;
+        let input = Arc::new(SyncIoEngine::with_offset(
+            src,
+            bs,
+            src_offset << SECTOR_SHIFT,
+            16,
+            false,
+            true,
+        )?);
+        let output = Arc::new(SyncIoEngine::with_offset(
+            dest,
+            bs,
+            dest_offset << SECTOR_SHIFT,
+            16,
+            true,
+            true,
+        )?);
 
         Ok(SyncCopier { input, output })
     }
 
     pub fn copy(&self, op: CopyOp) -> io::Result<()> {
-        let b = self.input.read(op.src_b)?;
-        self.output.write(&b)
+        let _b = self.input.read(op.src_b)?;
+        //self.output.write(&b)
+        Ok(())
     }
 }

@@ -205,6 +205,7 @@ struct SyncCopyVisitor {
     copier: SyncCopier,
     indicator: DirtyIndicator,
     only_dirty: bool,
+    pool: ThreadPool,
 }
 
 impl SyncCopyVisitor {
@@ -214,6 +215,7 @@ impl SyncCopyVisitor {
         only_dirty: bool,
         nr_metadata_blocks: u64,
         nr_cache_blocks: u32,
+        pool: ThreadPool,
     ) -> Self {
         SyncCopyVisitor {
             inner: Mutex::new(SVInner {
@@ -224,6 +226,7 @@ impl SyncCopyVisitor {
             copier: c,
             indicator,
             only_dirty,
+            pool,
         }
     }
 
@@ -240,25 +243,33 @@ impl ArrayVisitor<Mapping> for SyncCopyVisitor {
 
         let cbegin = index as u32 * b.header.max_entries;
         let cend = cbegin + b.header.nr_entries;
-        let mut cleaned = FixedBitSet::with_capacity(b.header.nr_entries as usize);
-        for ((i, m), cblock) in b.values.iter().enumerate().zip(cbegin..cend) {
+        let cleaned = Arc::new(Mutex::new(FixedBitSet::with_capacity(
+            b.header.nr_entries as usize,
+        )));
+        for ((i, m), cblock) in b.values.into_iter().enumerate().zip(cbegin..cend) {
             // skip unused or clean blocks
-            if !m.is_valid() || (self.only_dirty && !self.indicator.is_dirty(cblock, m)) {
+            if !m.is_valid() || (self.only_dirty && !self.indicator.is_dirty(cblock, &m)) {
                 continue;
             }
 
             blocks_needed += 1;
+            let copier = self.copier.clone();
+            let c = cleaned.clone();
 
-            let cop = CopyOp::new(cblock as u64, m.oblock);
-            if self.copier.copy(cop).is_ok() {
-                cleaned.set(i, true);
-            } else {
-                blocks_failed += 1;
-            }
+            self.pool.execute(move || {
+                let cop = CopyOp::new(cblock as u64, m.oblock);
+                if copier.copy(cop).is_ok() {
+                    c.lock().unwrap().set(i, true);
+                } else {
+                    //blocks_failed += 1;
+                }
+            });
         }
 
+        self.pool.join();
+
         // update shared statistics
-        {
+        /*{
             let mut inner = self.inner.lock().unwrap();
 
             if blocks_needed > 0 {
@@ -276,7 +287,7 @@ impl ArrayVisitor<Mapping> for SyncCopyVisitor {
             inner.stats.blocks_issued += blocks_needed;
             inner.stats.blocks_completed += blocks_needed;
             inner.stats.blocks_failed += blocks_failed;
-        }
+        }*/
 
         // TODO: update progress bar
 
@@ -535,37 +546,25 @@ fn copy_dirty_blocks_sync(
         opts.origin_dev_offset.unwrap_or(0),
     )?;
 
+    let nr_threads = std::cmp::max(8, num_cpus::get() * 2);
+    let pool = ThreadPool::new(nr_threads);
+
     let nr_metadata_blocks = unpack::<SMRoot>(&sb.metadata_sm_root[0..])?.nr_blocks;
     let indicator = DirtyIndicator::new(ctx.engine.clone(), sb);
-    let cv = Arc::new(SyncCopyVisitor::new(
+    let cv = SyncCopyVisitor::new(
         copier,
         indicator,
         sb.flags.clean_shutdown,
         nr_metadata_blocks,
         sb.cache_blocks,
-    ));
+        pool,
+    );
 
-    let nr_threads = std::cmp::max(8, num_cpus::get() * 2);
-    let pool = ThreadPool::new(nr_threads);
-    let sm = Arc::new(Mutex::new(RestrictedSpaceMap::new(
-        ctx.engine.get_nr_blocks(),
-    )));
-    let err = walk_array_threaded(
-        ctx.engine.clone(),
-        cv.clone(),
-        &pool,
-        sm,
-        sb.mapping_root,
-        true,
-    )
-    .is_err();
+    let w = ArrayWalker::new(ctx.engine.clone(), true);
+    let err = w.walk(&cv, sb.mapping_root).is_err();
 
-    if let Ok(t) = Arc::try_unwrap(cv) {
-        let (stats, dirty_ablocks, cleaned_blocks) = t.complete()?;
-        Ok((err, stats, dirty_ablocks, cleaned_blocks))
-    } else {
-        Err(anyhow!("cannot terminate threads"))
-    }
+    let (stats, dirty_ablocks, cleaned_blocks) = cv.complete()?;
+    Ok((err, stats, dirty_ablocks, cleaned_blocks))
 }
 
 fn report_stats(report: Arc<Report>, stats: &CopyStats) {
