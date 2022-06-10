@@ -195,8 +195,6 @@ impl ArrayVisitor<Mapping> for CopyVisitor {
 //------------------------------------------
 
 struct SVInner {
-    copier: SyncCopier,
-    indicator: DirtyIndicator,
     stats: CopyStats,
     dirty_ablocks: FixedBitSet,  // array blocks containing dirty mappings
     cleaned_blocks: FixedBitSet, // cache blocks that had been writeback successfully
@@ -204,6 +202,8 @@ struct SVInner {
 
 struct SyncCopyVisitor {
     inner: Mutex<SVInner>,
+    copier: SyncCopier,
+    indicator: DirtyIndicator,
     only_dirty: bool,
 }
 
@@ -217,12 +217,12 @@ impl SyncCopyVisitor {
     ) -> Self {
         SyncCopyVisitor {
             inner: Mutex::new(SVInner {
-                copier: c,
-                indicator,
                 stats: CopyStats::new(),
                 dirty_ablocks: FixedBitSet::with_capacity(nr_metadata_blocks as usize),
                 cleaned_blocks: FixedBitSet::with_capacity(nr_cache_blocks as usize),
             }),
+            copier: c,
+            indicator,
             only_dirty,
         }
     }
@@ -235,43 +235,48 @@ impl SyncCopyVisitor {
 
 impl ArrayVisitor<Mapping> for SyncCopyVisitor {
     fn visit(&self, index: u64, b: ArrayBlock<Mapping>) -> array::Result<()> {
-        let mut inner = self.inner.lock().unwrap();
-
-        let mut blocks_scanned = 0;
         let mut blocks_needed = 0;
-        let mut blocks_completed = 0;
         let mut blocks_failed = 0;
 
         let cbegin = index as u32 * b.header.max_entries;
-        let cend = cbegin + b.header.max_entries;
-        for (m, cblock) in b.values.iter().zip(cbegin..cend) {
-            blocks_scanned += 1;
-
+        let cend = cbegin + b.header.nr_entries;
+        let mut cleaned = FixedBitSet::with_capacity(b.header.nr_entries as usize);
+        for ((i, m), cblock) in b.values.iter().enumerate().zip(cbegin..cend) {
             // skip unused or clean blocks
-            if !m.is_valid() || (self.only_dirty && !inner.indicator.is_dirty(cblock, m)) {
+            if !m.is_valid() || (self.only_dirty && !self.indicator.is_dirty(cblock, m)) {
                 continue;
             }
 
             blocks_needed += 1;
 
             let cop = CopyOp::new(cblock as u64, m.oblock);
-            if inner.copier.copy(cop).is_ok() {
-                inner.cleaned_blocks.set(cblock as usize, true);
+            if self.copier.copy(cop).is_ok() {
+                cleaned.set(i, true);
             } else {
                 blocks_failed += 1;
             }
-            blocks_completed += 1;
         }
 
-        if blocks_needed > 0 {
-            inner.dirty_ablocks.set(b.header.blocknr as usize, true);
-        }
+        // update shared statistics
+        {
+            let mut inner = self.inner.lock().unwrap();
 
-        inner.stats.blocks_scanned += blocks_scanned;
-        inner.stats.blocks_needed += blocks_needed;
-        inner.stats.blocks_issued += blocks_needed;
-        inner.stats.blocks_completed += blocks_completed;
-        inner.stats.blocks_failed += blocks_failed;
+            if blocks_needed > 0 {
+                inner.dirty_ablocks.set(b.header.blocknr as usize, true);
+            }
+
+            for (i, cblock) in (0..b.header.nr_entries).zip(cbegin..cend) {
+                if cleaned.contains(i as usize) {
+                    inner.cleaned_blocks.set(cblock as usize, true);
+                }
+            }
+
+            inner.stats.blocks_scanned += b.header.nr_entries;
+            inner.stats.blocks_needed += blocks_needed;
+            inner.stats.blocks_issued += blocks_needed;
+            inner.stats.blocks_completed += blocks_needed;
+            inner.stats.blocks_failed += blocks_failed;
+        }
 
         // TODO: update progress bar
 
