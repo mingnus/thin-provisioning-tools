@@ -26,9 +26,10 @@ impl SyncCopier {
         }
 
         let bs = (block_size << SECTOR_SHIFT) as usize;
-        let input = SyncIoEngine::with_offset(src, bs, src_offset << SECTOR_SHIFT, 1, false, true)?;
+        let input =
+            SyncIoEngine::with_offset(src, bs, src_offset << SECTOR_SHIFT, 16, false, true)?;
         let output =
-            SyncIoEngine::with_offset(dest, bs, dest_offset << SECTOR_SHIFT, 1, true, true)?;
+            SyncIoEngine::with_offset(dest, bs, dest_offset << SECTOR_SHIFT, 16, true, true)?;
 
         Ok(SyncCopier { input, output })
     }
