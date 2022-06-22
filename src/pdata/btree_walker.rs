@@ -111,6 +111,7 @@ impl BTreeWalker {
         visitor: &NV,
         krs: &[KeyRange],
         bs: &[u64],
+        max_depth: usize,
     ) -> Vec<BTreeError>
     where
         NV: NodeVisitor<V>,
@@ -163,9 +164,14 @@ impl BTreeWalker {
                             self.set_fail(blocks[i], e);
                         }
                         Ok(b) => {
-                            if let Err(e) =
-                                self.walk_node(path, visitor, &filtered_krs[i], &b, false)
-                            {
+                            if let Err(e) = self.walk_node(
+                                path,
+                                visitor,
+                                &filtered_krs[i],
+                                &b,
+                                false,
+                                max_depth,
+                            ) {
                                 errs.push(e);
                             }
                         }
@@ -184,6 +190,7 @@ impl BTreeWalker {
         kr: &KeyRange,
         b: &Block,
         is_root: bool,
+        max_depth: usize,
     ) -> Result<()>
     where
         NV: NodeVisitor<V>,
@@ -205,7 +212,7 @@ impl BTreeWalker {
         match node {
             Internal { keys, values, .. } => {
                 let krs = split_key_ranges(path, kr, &keys)?;
-                let errs = self.walk_nodes(path, visitor, &krs, &values);
+                let errs = self.walk_nodes(path, visitor, &krs, &values, max_depth);
                 return self.build_aggregate(b.loc, errs);
             }
             Leaf {
@@ -236,13 +243,18 @@ impl BTreeWalker {
         kr: &KeyRange,
         b: &Block,
         is_root: bool,
+        max_depth: usize,
     ) -> Result<()>
     where
         NV: NodeVisitor<V>,
         V: Unpack,
     {
+        if path.len() + 1 == max_depth {
+            return Ok(());
+        }
+
         path.push(b.loc);
-        let r = self.walk_node_(path, visitor, kr, b, is_root);
+        let r = self.walk_node_(path, visitor, kr, b, is_root, max_depth);
         path.pop();
         visitor.end_walk()?;
         r
@@ -265,7 +277,34 @@ impl BTreeWalker {
                 start: None,
                 end: None,
             };
-            self.walk_node(path, visitor, &kr, &root, true)
+            self.walk_node(path, visitor, &kr, &root, true, usize::MAX)
+        }
+    }
+
+    pub fn walk_with_depth<NV, V>(
+        &self,
+        path: &mut Vec<u64>,
+        visitor: &NV,
+        root: u64,
+        max_depth: usize,
+    ) -> Result<()>
+    where
+        NV: NodeVisitor<V>,
+        V: Unpack,
+    {
+        if self.sm_inc(root) > 0 {
+            if let Some(e) = self.failed(root) {
+                Err(e)
+            } else {
+                visitor.visit_again(path, root)
+            }
+        } else {
+            let root = self.engine.read(root).map_err(|_| io_err(path))?;
+            let kr = KeyRange {
+                start: None,
+                end: None,
+            };
+            self.walk_node(path, visitor, &kr, &root, true, max_depth)
         }
     }
 }
@@ -405,7 +444,8 @@ where
                         let mut path = path.to_vec();
 
                         pool.execute(move || {
-                            if let Err(e) = w.walk_node(&mut path, visitor.as_ref(), &kr, &b, false)
+                            if let Err(e) =
+                                w.walk_node(&mut path, visitor.as_ref(), &kr, &b, false, usize::MAX)
                             {
                                 let mut errs = errs.lock().unwrap();
                                 errs.push(e);
@@ -422,6 +462,35 @@ where
     }
 
     errs
+}
+
+pub fn get_depth<V: Unpack>(
+    engine: Arc<dyn IoEngine + Send + Sync>,
+    path: &mut Vec<u64>,
+    root: u64,
+    is_root: bool,
+) -> Result<usize> {
+    use Node::*;
+
+    let b = engine.read(root).map_err(|_| io_err(path))?;
+
+    let bt = checksum::metadata_block_type(b.get_data());
+    if bt != checksum::BT::NODE {
+        return Err(node_err_s(
+            path,
+            format!("checksum failed for node {}, {:?}", root, bt),
+        ));
+    }
+
+    let node = unpack_node::<V>(path, b.get_data(), true, is_root)?;
+
+    match node {
+        Internal { values, .. } => {
+            let n = get_depth::<V>(engine, path, values[0], false)?;
+            Ok(n + 1)
+        }
+        Leaf { .. } => Ok(0),
+    }
 }
 
 pub fn walk_threaded<NV, V>(

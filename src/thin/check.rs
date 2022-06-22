@@ -153,7 +153,7 @@ fn check_mapping_bottom_level(
     // at that point.
     let mut failed = false;
 
-    if roots.len() > 64 {
+    if roots.len() > 0 {
         let errs = Arc::new(Mutex::new(Vec::new()));
         for (path, root) in roots.values() {
             let data_sm = data_sm.clone();
@@ -163,8 +163,12 @@ fn check_mapping_bottom_level(
             let mut path = path.clone();
             let errs = errs.clone();
 
+            let depth = get_depth::<BlockTime>(ctx.engine.clone(), &mut vec![0], root, true)?;
+            //println!("root {} depth {}", root, depth);
+
             ctx.pool.execute(move || {
-                if let Err(e) = w.walk(&mut path, &v, root) {
+                let max_depth = path.len() + depth;
+                if let Err(e) = w.walk_with_depth(&mut path, &v, root, max_depth) {
                     let mut errs = errs.lock().unwrap();
                     errs.push(e);
                 }
@@ -258,6 +262,7 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
 
     let metadata_root = unpack::<SMRoot>(&sb.metadata_sm_root[0..])?;
     let mut path = vec![0];
+    path.reserve(10); // reserve some space to prevent BTreeWalker from stopping traversal
 
     // Device details.   We read this once to get the number of thin devices, and hence the
     // maximum metadata ref count.  Then create metadata space map, and reread to increment
@@ -345,7 +350,8 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
             opts.ignore_non_fatal,
         )?;
     }
-
+    println!("num reads {}", engine.get_read_counts());
+    return Ok(());
     //-----------------------------------------
 
     report.set_sub_title("data space map");

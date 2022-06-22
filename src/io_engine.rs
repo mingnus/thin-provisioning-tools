@@ -9,6 +9,7 @@ use std::io::{self, Result};
 use std::os::unix::fs::{FileExt, OpenOptionsExt};
 use std::os::unix::io::{AsRawFd, RawFd};
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::file_utils;
@@ -68,6 +69,7 @@ unsafe impl Send for Block {}
 pub trait IoEngine {
     fn get_nr_blocks(&self) -> u64;
     fn get_batch_size(&self) -> usize;
+    fn get_read_counts(&self) -> u64;
 
     fn read(&self, b: u64) -> Result<Block>;
     // The whole io could fail, or individual blocks
@@ -87,6 +89,7 @@ fn get_nr_blocks(path: &Path) -> io::Result<u64> {
 pub struct SyncIoEngine {
     nr_blocks: u64,
     file: File,
+    nr_reads: AtomicU64,
 }
 
 impl SyncIoEngine {
@@ -112,7 +115,11 @@ impl SyncIoEngine {
         let nr_blocks = get_nr_blocks(path)?; // check file mode before opening it
         let file = SyncIoEngine::open_file(path, writable, excl)?;
 
-        Ok(SyncIoEngine { nr_blocks, file })
+        Ok(SyncIoEngine {
+            nr_blocks,
+            file,
+            nr_reads: AtomicU64::new(0),
+        })
     }
 }
 
@@ -125,10 +132,15 @@ impl IoEngine for SyncIoEngine {
         1
     }
 
+    fn get_read_counts(&self) -> u64 {
+        self.nr_reads.load(Ordering::Relaxed)
+    }
+
     fn read(&self, loc: u64) -> Result<Block> {
         let b = Block::new(loc);
         self.file
             .read_exact_at(b.get_data(), b.loc * BLOCK_SIZE as u64)?;
+        self.nr_reads.fetch_add(1, Ordering::Relaxed);
         Ok(b)
     }
 
@@ -321,6 +333,10 @@ impl IoEngine for AsyncIoEngine {
 
     fn get_batch_size(&self) -> usize {
         self.inner.lock().unwrap().queue_len as usize
+    }
+
+    fn get_read_counts(&self) -> u64 {
+        0 // stub
     }
 
     fn read(&self, b: u64) -> Result<Block> {
