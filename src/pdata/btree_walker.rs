@@ -146,6 +146,10 @@ impl BTreeWalker {
             }
         }
 
+        if path.len() == max_depth {
+            return errs;
+        }
+
         match self.engine.read_many(&blocks[0..]) {
             Err(_) => {
                 // IO completely failed, error every block
@@ -249,10 +253,6 @@ impl BTreeWalker {
         NV: NodeVisitor<V>,
         V: Unpack,
     {
-        if path.len() + 1 == max_depth {
-            return Ok(());
-        }
-
         path.push(b.loc);
         let r = self.walk_node_(path, visitor, kr, b, is_root, max_depth);
         path.pop();
