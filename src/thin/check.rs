@@ -172,21 +172,21 @@ fn check_mapping_bottom_level(
             let depth = get_depth::<BlockTime>(ctx.engine.clone(), &mut vec![0], root, true)?;
             //println!("root {} depth {}", root, depth);
 
-            //ctx.pool.execute(move || {
-            let nr_reads = ctx.engine.get_read_counts();
-            let max_depth = path.len() + depth;
-            if let Err(e) = w.walk_with_depth(&mut path, &v, root, max_depth) {
-                let mut errs = errs.lock().unwrap();
-                errs.push(e);
-            }
-            println!(
-                "{}\t{}\t{}\t{}",
-                id,
-                depth + 1,
-                ctx.engine.get_read_counts() - nr_reads,
-                v.nr_skipped.load(Ordering::Relaxed),
-            );
-            //});
+            ctx.pool.execute(move || {
+                //let nr_reads = ctx.engine.get_read_counts();
+                let max_depth = path.len() + depth;
+                if let Err(e) = w.walk_with_depth(&mut path, &v, root, max_depth) {
+                    let mut errs = errs.lock().unwrap();
+                    errs.push(e);
+                }
+                /*println!(
+                    "{}\t{}\t{}\t{}",
+                    id,
+                    depth + 1,
+                    ctx.engine.get_read_counts() - nr_reads,
+                    v.nr_skipped.load(Ordering::Relaxed),
+                );*/
+            });
         }
         ctx.pool.join();
         let errs = Arc::try_unwrap(errs).unwrap().into_inner().unwrap();
@@ -199,7 +199,10 @@ fn check_mapping_bottom_level(
             let w = w.clone();
             let data_sm = data_sm.clone();
             let root = *root;
-            let v = Arc::new(BottomLevelVisitor { data_sm, nr_skipped: AtomicU64::new(0) });
+            let v = Arc::new(BottomLevelVisitor {
+                data_sm,
+                nr_skipped: AtomicU64::new(0),
+            });
             let mut path = path.clone();
 
             if let Err(e) = walk_threaded(&mut path, w, &ctx.pool, v, root) {
