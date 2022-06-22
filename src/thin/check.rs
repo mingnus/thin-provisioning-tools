@@ -1,7 +1,7 @@
 use anyhow::{anyhow, Result};
 use std::collections::BTreeMap;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use threadpool::ThreadPool;
@@ -22,6 +22,7 @@ use crate::thin::superblock::*;
 
 struct BottomLevelVisitor {
     data_sm: ASpaceMap,
+    nr_skipped: AtomicU64,
 }
 
 //------------------------------------------
@@ -62,6 +63,7 @@ impl NodeVisitor<BlockTime> for BottomLevelVisitor {
     }
 
     fn visit_again(&self, _path: &[u64], _b: u64) -> btree::Result<()> {
+        self.nr_skipped.fetch_add(1, Ordering::Relaxed);
         Ok(())
     }
 
@@ -155,10 +157,14 @@ fn check_mapping_bottom_level(
 
     if roots.len() > 0 {
         let errs = Arc::new(Mutex::new(Vec::new()));
-        for (path, root) in roots.values() {
+        println!("dev\theight\treads\tskipped");
+        for (id, (path, root)) in roots.iter() {
             let data_sm = data_sm.clone();
             let root = *root;
-            let v = BottomLevelVisitor { data_sm };
+            let v = BottomLevelVisitor {
+                data_sm,
+                nr_skipped: AtomicU64::new(0),
+            };
             let w = w.clone();
             let mut path = path.clone();
             let errs = errs.clone();
@@ -166,13 +172,21 @@ fn check_mapping_bottom_level(
             let depth = get_depth::<BlockTime>(ctx.engine.clone(), &mut vec![0], root, true)?;
             //println!("root {} depth {}", root, depth);
 
-            ctx.pool.execute(move || {
-                let max_depth = path.len() + depth;
-                if let Err(e) = w.walk_with_depth(&mut path, &v, root, max_depth) {
-                    let mut errs = errs.lock().unwrap();
-                    errs.push(e);
-                }
-            });
+            //ctx.pool.execute(move || {
+            let nr_reads = ctx.engine.get_read_counts();
+            let max_depth = path.len() + depth;
+            if let Err(e) = w.walk_with_depth(&mut path, &v, root, max_depth) {
+                let mut errs = errs.lock().unwrap();
+                errs.push(e);
+            }
+            println!(
+                "{}\t{}\t{}\t{}",
+                id,
+                depth + 1,
+                ctx.engine.get_read_counts() - nr_reads,
+                v.nr_skipped.load(Ordering::Relaxed),
+            );
+            //});
         }
         ctx.pool.join();
         let errs = Arc::try_unwrap(errs).unwrap().into_inner().unwrap();
@@ -185,7 +199,7 @@ fn check_mapping_bottom_level(
             let w = w.clone();
             let data_sm = data_sm.clone();
             let root = *root;
-            let v = Arc::new(BottomLevelVisitor { data_sm });
+            let v = Arc::new(BottomLevelVisitor { data_sm, nr_skipped: AtomicU64::new(0) });
             let mut path = path.clone();
 
             if let Err(e) = walk_threaded(&mut path, w, &ctx.pool, v, root) {
