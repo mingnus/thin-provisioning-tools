@@ -120,6 +120,10 @@ impl BTreeWalker {
         assert_eq!(krs.len(), bs.len());
         let mut errs: Vec<BTreeError> = Vec::new();
 
+        if path.len() == max_depth {
+            return errs;
+        }
+
         let mut blocks = Vec::with_capacity(bs.len());
         let mut filtered_krs = Vec::with_capacity(krs.len());
         for i in 0..bs.len() {
@@ -144,10 +148,6 @@ impl BTreeWalker {
                     }
                 }
             }
-        }
-
-        if path.len() == max_depth {
-            return errs;
         }
 
         match self.engine.read_many(&blocks[0..]) {
