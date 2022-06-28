@@ -20,6 +20,7 @@ Items in the High or Medium sections should be done before the formal release. T
 - [ ] btree_builder: Check pushed key ordering
 - [ ] thin/cache_metadata_size: Improve output precision (for Stratis)
 - [x] cache_restore: Support v1 metadata
+- [ ] Update man pages, e.g., limit the pool_size for thin_metadata_size to petabytes.
 
 ## Performance Issues
 
