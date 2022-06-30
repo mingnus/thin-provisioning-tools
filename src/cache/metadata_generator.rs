@@ -1,12 +1,14 @@
 use anyhow::{anyhow, Result};
 use fixedbitset::FixedBitSet;
 use rand::prelude::*;
+use std::path::Path;
 use std::sync::Arc;
 
+use crate::commands::engine::*;
 use crate::cache::ir;
 use crate::cache::ir::MetadataVisitor;
 use crate::cache::restore::Restorer;
-use crate::io_engine::IoEngine;
+use crate::io_engine::*;
 use crate::pdata::space_map::metadata::core_metadata_sm;
 use crate::write_batcher::WriteBatcher;
 
@@ -114,7 +116,7 @@ impl MetadataGenerator for CacheGenerator {
 
 //------------------------------------------
 
-pub fn format(engine: Arc<dyn IoEngine + Send + Sync>, gen: &CacheGenerator) -> Result<()> {
+fn format(engine: Arc<dyn IoEngine + Send + Sync>, gen: &CacheGenerator) -> Result<()> {
     let sm = core_metadata_sm(engine.get_nr_blocks(), u32::MAX);
     let batch_size = engine.get_batch_size();
     let mut w = WriteBatcher::new(engine, sm, batch_size);
@@ -123,12 +125,56 @@ pub fn format(engine: Arc<dyn IoEngine + Send + Sync>, gen: &CacheGenerator) -> 
     gen.generate_metadata(&mut restorer)
 }
 
-pub fn set_needs_check(engine: Arc<dyn IoEngine + Send + Sync>) -> Result<()> {
+fn set_needs_check(engine: Arc<dyn IoEngine + Send + Sync>) -> Result<()> {
     use crate::cache::superblock::*;
 
     let mut sb = read_superblock(engine.as_ref(), SUPERBLOCK_LOCATION)?;
     sb.flags.needs_check = true;
     write_superblock(engine.as_ref(), SUPERBLOCK_LOCATION, &sb)
+}
+
+//------------------------------------------
+
+pub enum MetadataOp {
+    Format,
+    SetNeedsCheck,
+}
+
+pub struct CacheGenerateOpts<'a> {
+    pub op: MetadataOp,
+    pub block_size: u32,
+    pub nr_cache_blocks: u32,
+    pub nr_origin_blocks: u64,
+    pub percent_resident: u8,
+    pub percent_dirty: u8,
+    pub engine_opts: EngineOptions,
+    pub output: &'a Path,
+    pub metadata_version: u8,
+}
+
+pub fn generate_metadata(opts: &CacheGenerateOpts) -> Result<()> {
+    let engine = EngineBuilder::new(opts.output, &opts.engine_opts)
+        .write(true)
+        .build()?;
+
+    match opts.op {
+        MetadataOp::Format => {
+            let cache_gen = CacheGenerator {
+                block_size: opts.block_size,
+                nr_cache_blocks: opts.nr_cache_blocks,
+                nr_origin_blocks: opts.nr_origin_blocks,
+                percent_resident: opts.percent_resident,
+                percent_dirty: opts.percent_dirty,
+                metadata_version: opts.metadata_version,
+            };
+            format(engine, &cache_gen)?;
+        }
+        MetadataOp::SetNeedsCheck => {
+            set_needs_check(engine)?;
+        }
+    }
+
+    Ok(())
 }
 
 //------------------------------------------

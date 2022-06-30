@@ -1,4 +1,3 @@
-use anyhow::Result;
 use clap::{Arg, ArgGroup};
 
 use std::path::Path;
@@ -8,50 +7,6 @@ use crate::cache::metadata_generator::*;
 use crate::commands::engine::*;
 use crate::commands::utils::*;
 use crate::commands::Command;
-
-//------------------------------------------
-
-pub enum MetadataOp {
-    Format,
-    SetNeedsCheck,
-}
-
-struct CacheGenerateOpts<'a> {
-    op: MetadataOp,
-    block_size: u32,
-    nr_cache_blocks: u32,
-    nr_origin_blocks: u64,
-    percent_resident: u8,
-    percent_dirty: u8,
-    engine_opts: EngineOptions,
-    output: &'a Path,
-    metadata_version: u8,
-}
-
-fn generate_metadata(opts: &CacheGenerateOpts) -> Result<()> {
-    let engine = EngineBuilder::new(opts.output, &opts.engine_opts)
-        .write(true)
-        .build()?;
-
-    match opts.op {
-        MetadataOp::Format => {
-            let cache_gen = CacheGenerator {
-                block_size: opts.block_size,
-                nr_cache_blocks: opts.nr_cache_blocks,
-                nr_origin_blocks: opts.nr_origin_blocks,
-                percent_resident: opts.percent_resident,
-                percent_dirty: opts.percent_dirty,
-                metadata_version: opts.metadata_version,
-            };
-            format(engine, &cache_gen)?;
-        }
-        MetadataOp::SetNeedsCheck => {
-            set_needs_check(engine)?;
-        }
-    }
-
-    Ok(())
-}
 
 //------------------------------------------
 
