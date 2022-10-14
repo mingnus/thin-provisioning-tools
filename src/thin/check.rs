@@ -1,6 +1,7 @@
 use anyhow::{anyhow, Result};
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use threadpool::ThreadPool;
 
@@ -21,9 +22,19 @@ use crate::thin::superblock::*;
 
 struct BottomLevelVisitor {
     data_sm: ASpaceMap,
+    mapped_blocks: AtomicU64,
 }
 
 //------------------------------------------
+
+impl BottomLevelVisitor {
+    fn new(data_sm: ASpaceMap) -> Self {
+        Self {
+            data_sm,
+            mapped_blocks: AtomicU64::default(),
+        }
+    }
+}
 
 impl NodeVisitor<BlockTime> for BottomLevelVisitor {
     fn visit(
@@ -57,6 +68,8 @@ impl NodeVisitor<BlockTime> for BottomLevelVisitor {
         }
 
         data_sm.inc(start, len).unwrap();
+        self.mapped_blocks
+            .fetch_add(values.len() as u64, Ordering::SeqCst);
         Ok(())
     }
 
@@ -103,6 +116,7 @@ fn check_mapping_bottom_level(
     metadata_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
     data_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
     roots: &BTreeMap<u64, (Vec<u64>, u64)>,
+    devs: &BTreeMap<u64, DeviceDetail>,
     ignore_non_fatal: bool,
 ) -> Result<()> {
     ctx.report.set_sub_title("mapping tree");
@@ -113,45 +127,67 @@ fn check_mapping_bottom_level(
         ignore_non_fatal,
     )?);
 
+    let mapped_blocks = Arc::new(Mutex::new(BTreeMap::<u64, u64>::new()));
+
     // We want to print out errors as we progress, so we aggregate for each thin and print
     // at that point.
     let mut failed = false;
 
     if roots.len() > 64 {
         let errs = Arc::new(Mutex::new(Vec::new()));
-        for (path, root) in roots.values() {
+        for (thin_id, (path, root)) in roots.iter() {
+            let thin_id = *thin_id;
             let data_sm = data_sm.clone();
             let root = *root;
-            let v = BottomLevelVisitor { data_sm };
+            let v = BottomLevelVisitor::new(data_sm);
             let w = w.clone();
             let mut path = path.clone();
             let errs = errs.clone();
+            let mapped = mapped_blocks.clone();
 
             ctx.pool.execute(move || {
                 if let Err(e) = w.walk(&mut path, &v, root) {
                     let mut errs = errs.lock().unwrap();
                     errs.push(e);
                 }
+
+                let cnt = v.mapped_blocks.load(Ordering::SeqCst);
+                mapped.lock().unwrap().insert(thin_id, cnt);
             });
         }
         ctx.pool.join();
         let errs = Arc::try_unwrap(errs).unwrap().into_inner().unwrap();
         if !errs.is_empty() {
-            ctx.report.fatal(&format!("{}", aggregate_error(errs)));
             failed = true;
         }
     } else {
-        for (path, root) in roots.values() {
+        for (thin_id, (path, root)) in roots.iter() {
+            let thin_id = *thin_id;
             let w = w.clone();
             let data_sm = data_sm.clone();
             let root = *root;
-            let v = Arc::new(BottomLevelVisitor { data_sm });
+            let v = Arc::new(BottomLevelVisitor::new(data_sm));
             let mut path = path.clone();
+            let mapped = mapped_blocks.clone();
 
-            if let Err(e) = walk_threaded(&mut path, w, &ctx.pool, v, root) {
+            if walk_threaded(&mut path, w, &ctx.pool, v.clone(), root).is_err() {
                 failed = true;
-                ctx.report.fatal(&format!("{}", e));
             }
+
+            let cnt = v.mapped_blocks.load(Ordering::SeqCst);
+            mapped.lock().unwrap().insert(thin_id, cnt);
+        }
+    }
+
+    let mapped_blocks = mapped_blocks.lock().unwrap();
+    for (dev_id, details) in devs {
+        let cnt = mapped_blocks.get(dev_id).cloned().unwrap_or(0);
+        if cnt != details.mapped_blocks {
+            ctx.report.fatal(&format!(
+                "Device {} has unexpected number of mapped blocks: expected {}, actual {}.",
+                dev_id, details.mapped_blocks, cnt
+            ));
+            failed = true;
         }
     }
 
@@ -255,7 +291,7 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
     });
 
     // mapping top level
-    report.set_sub_title("mapping tree");
+    report.set_sub_title("mapping top level");
     let roots = btree_to_map_with_path::<u64>(
         &mut path,
         engine.clone(),
@@ -275,7 +311,14 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
     // mapping bottom level
     let root = unpack::<SMRoot>(&sb.data_sm_root[0..])?;
     let data_sm = core_sm(root.nr_blocks, nr_devs as u32);
-    check_mapping_bottom_level(&ctx, &metadata_sm, &data_sm, &roots, opts.ignore_non_fatal)?;
+    check_mapping_bottom_level(
+        &ctx,
+        &metadata_sm,
+        &data_sm,
+        &roots,
+        &devs,
+        opts.ignore_non_fatal,
+    )?;
 
     // trees in metadata snap
     if sb.metadata_snap > 0 {
@@ -286,7 +329,7 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
         let sb_snap = read_superblock(engine.as_ref(), sb.metadata_snap)?;
 
         // device details
-        btree_to_map_with_sm::<DeviceDetail>(
+        let devs_snap = btree_to_map_with_sm::<DeviceDetail>(
             &mut path,
             engine.clone(),
             metadata_sm.clone(),
@@ -309,6 +352,7 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
             &metadata_sm,
             &data_sm,
             &roots_snap,
+            &devs_snap,
             opts.ignore_non_fatal,
         )?;
     }
@@ -443,7 +487,7 @@ pub fn check_with_maps(
     // mapping bottom level
     let root = unpack::<SMRoot>(&sb.data_sm_root[0..])?;
     let data_sm = core_sm(root.nr_blocks, nr_devs as u32);
-    check_mapping_bottom_level(&ctx, &metadata_sm, &data_sm, &roots, false)?;
+    check_mapping_bottom_level(&ctx, &metadata_sm, &data_sm, &roots, &devs, false)?;
 
     //-----------------------------------------
 
