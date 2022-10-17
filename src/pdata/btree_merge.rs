@@ -48,6 +48,8 @@ impl LeafVisitor {
 }
 
 impl<V: Unpack> NodeVisitor<V> for LeafVisitor {
+    type NodeSummary = ();
+
     fn visit(
         &self,
         path: &[u64],
@@ -55,7 +57,7 @@ impl<V: Unpack> NodeVisitor<V> for LeafVisitor {
         _header: &NodeHeader,
         keys: &[u64],
         _values: &[V],
-    ) -> btree::Result<()> {
+    ) -> btree::Result<Self::NodeSummary> {
         // ignore empty nodes
         if keys.is_empty() {
             return Ok(());
@@ -84,7 +86,7 @@ impl<V: Unpack> NodeVisitor<V> for LeafVisitor {
         Ok(())
     }
 
-    fn visit_again(&self, _path: &[u64], _b: u64) -> btree::Result<()> {
+    fn visit_again(&self, _path: &[u64], _b: u64, _s: Self::NodeSummary) -> btree::Result<()> {
         Ok(())
     }
 

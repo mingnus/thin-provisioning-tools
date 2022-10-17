@@ -33,6 +33,8 @@ impl<'a> OverflowChecker<'a> {
 }
 
 impl<'a> NodeVisitor<u32> for OverflowChecker<'a> {
+    type NodeSummary = ();
+
     fn visit(
         &self,
         _path: &[u64],
@@ -40,7 +42,7 @@ impl<'a> NodeVisitor<u32> for OverflowChecker<'a> {
         _h: &NodeHeader,
         keys: &[u64],
         values: &[u32],
-    ) -> btree::Result<()> {
+    ) -> btree::Result<Self::NodeSummary> {
         for n in 0..keys.len() {
             let k = keys[n];
             let v = values[n];
@@ -56,7 +58,7 @@ impl<'a> NodeVisitor<u32> for OverflowChecker<'a> {
         Ok(())
     }
 
-    fn visit_again(&self, _path: &[u64], _b: u64) -> btree::Result<()> {
+    fn visit_again(&self, _path: &[u64], _b: u64, _s: Self::NodeSummary) -> btree::Result<()> {
         Ok(())
     }
 

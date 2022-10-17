@@ -13,6 +13,8 @@ use crate::write_batcher::WriteBatcher;
 mock! {
     Visitor<V> {}
     impl<V: Unpack> NodeVisitor<V> for Visitor<V> {
+        type NodeSummary = ();
+
         fn visit(
             &self,
             path: &[u64],
@@ -21,7 +23,7 @@ mock! {
             keys: &[u64],
             values: &[V],
         ) -> Result<()>;
-        fn visit_again(&self, path: &[u64], b: u64) -> Result<()>;
+        fn visit_again(&self, path: &[u64], b: u64, s: ()) -> Result<()>;
         fn end_walk(&self) -> Result<()>;
     }
 }

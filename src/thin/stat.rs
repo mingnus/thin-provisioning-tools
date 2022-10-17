@@ -33,6 +33,8 @@ impl RefCounter {
 }
 
 impl NodeVisitor<u32> for RefCounter {
+    type NodeSummary = ();
+
     fn visit(
         &self,
         _path: &[u64],
@@ -40,7 +42,7 @@ impl NodeVisitor<u32> for RefCounter {
         _h: &NodeHeader,
         _keys: &[u64],
         values: &[u32],
-    ) -> btree::Result<()> {
+    ) -> btree::Result<Self::NodeSummary> {
         let mut histogram = self.histogram.lock().unwrap();
         for count in values {
             *histogram.entry(*count).or_insert(0) += 1;
@@ -48,7 +50,7 @@ impl NodeVisitor<u32> for RefCounter {
         Ok(())
     }
 
-    fn visit_again(&self, _path: &[u64], _b: u64) -> btree::Result<()> {
+    fn visit_again(&self, _path: &[u64], _b: u64, _s: Self::NodeSummary) -> btree::Result<()> {
         Ok(())
     }
 

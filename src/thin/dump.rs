@@ -101,6 +101,8 @@ impl<'a> MappingVisitor<'a> {
 }
 
 impl<'a> NodeVisitor<BlockTime> for MappingVisitor<'a> {
+    type NodeSummary = ();
+
     fn visit(
         &self,
         _path: &[u64],
@@ -108,7 +110,7 @@ impl<'a> NodeVisitor<BlockTime> for MappingVisitor<'a> {
         _h: &NodeHeader,
         keys: &[u64],
         values: &[BlockTime],
-    ) -> btree::Result<()> {
+    ) -> btree::Result<Self::NodeSummary> {
         let mut inner = self.inner.lock().unwrap();
         for (k, v) in keys.iter().zip(values.iter()) {
             if let Some(run) = inner.builder.next(*k, v.block, v.time) {
@@ -125,7 +127,7 @@ impl<'a> NodeVisitor<BlockTime> for MappingVisitor<'a> {
         Ok(())
     }
 
-    fn visit_again(&self, _path: &[u64], b: u64) -> btree::Result<()> {
+    fn visit_again(&self, _path: &[u64], b: u64, _s: Self::NodeSummary) -> btree::Result<()> {
         let mut inner = self.inner.lock().unwrap();
         inner
             .md_out

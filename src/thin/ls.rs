@@ -118,6 +118,8 @@ struct BottomLevelVisitor {
 }
 
 impl NodeVisitor<BlockTime> for BottomLevelVisitor {
+    type NodeSummary = ();
+
     fn visit(
         &self,
         _path: &[u64],
@@ -125,7 +127,7 @@ impl NodeVisitor<BlockTime> for BottomLevelVisitor {
         _h: &NodeHeader,
         _k: &[u64],
         values: &[BlockTime],
-    ) -> btree::Result<()> {
+    ) -> btree::Result<Self::NodeSummary> {
         if values.is_empty() {
             return Ok(());
         }
@@ -150,7 +152,7 @@ impl NodeVisitor<BlockTime> for BottomLevelVisitor {
         Ok(())
     }
 
-    fn visit_again(&self, _path: &[u64], _b: u64) -> btree::Result<()> {
+    fn visit_again(&self, _path: &[u64], _b: u64, _s: Self::NodeSummary) -> btree::Result<()> {
         Ok(())
     }
 

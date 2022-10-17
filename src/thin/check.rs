@@ -37,6 +37,8 @@ impl BottomLevelVisitor {
 }
 
 impl NodeVisitor<BlockTime> for BottomLevelVisitor {
+    type NodeSummary = u64;
+
     fn visit(
         &self,
         _path: &[u64],
@@ -44,11 +46,11 @@ impl NodeVisitor<BlockTime> for BottomLevelVisitor {
         _h: &NodeHeader,
         _k: &[u64],
         values: &[BlockTime],
-    ) -> btree::Result<()> {
+    ) -> btree::Result<Self::NodeSummary> {
         // FIXME: do other checks
 
         if values.is_empty() {
-            return Ok(());
+            return Ok(0);
         }
 
         let mut data_sm = self.data_sm.lock().unwrap();
@@ -67,18 +69,25 @@ impl NodeVisitor<BlockTime> for BottomLevelVisitor {
             }
         }
 
+        let nr_entries = values.len() as u64;
         data_sm.inc(start, len).unwrap();
-        self.mapped_blocks
-            .fetch_add(values.len() as u64, Ordering::SeqCst);
-        Ok(())
+        self.mapped_blocks.fetch_add(nr_entries, Ordering::SeqCst);
+        Ok(nr_entries)
     }
 
-    fn visit_again(&self, _path: &[u64], _b: u64) -> btree::Result<()> {
+    fn visit_again(&self, _path: &[u64], _b: u64, s: Self::NodeSummary) -> btree::Result<()> {
+        self.mapped_blocks.fetch_add(s, Ordering::SeqCst);
         Ok(())
     }
 
     fn end_walk(&self) -> btree::Result<()> {
         Ok(())
+    }
+}
+
+impl SubtreeSummary for u64 {
+    fn append(&mut self, other: &Self) {
+        *self += *other;
     }
 }
 

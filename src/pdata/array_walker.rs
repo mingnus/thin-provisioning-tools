@@ -64,6 +64,8 @@ impl<'a, V: Unpack> BlockValueVisitor<'a, V> {
 }
 
 impl<'a, V: Unpack> NodeVisitor<u64> for BlockValueVisitor<'a, V> {
+    type NodeSummary = ();
+
     fn visit(
         &self,
         path: &[u64],
@@ -71,7 +73,7 @@ impl<'a, V: Unpack> NodeVisitor<u64> for BlockValueVisitor<'a, V> {
         _h: &NodeHeader,
         keys: &[u64],
         values: &[u64],
-    ) -> btree_error::Result<()> {
+    ) -> btree_error::Result<Self::NodeSummary> {
         if keys.is_empty() {
             return Ok(());
         }
@@ -125,7 +127,12 @@ impl<'a, V: Unpack> NodeVisitor<u64> for BlockValueVisitor<'a, V> {
         }
     }
 
-    fn visit_again(&self, _path: &[u64], _b: u64) -> btree_error::Result<()> {
+    fn visit_again(
+        &self,
+        _path: &[u64],
+        _b: u64,
+        _s: Self::NodeSummary,
+    ) -> btree_error::Result<()> {
         Ok(())
     }
 
@@ -191,6 +198,8 @@ impl BlockPathCollector {
 }
 
 impl NodeVisitor<u64> for BlockPathCollector {
+    type NodeSummary = ();
+
     fn visit(
         &self,
         path: &[u64],
@@ -198,7 +207,7 @@ impl NodeVisitor<u64> for BlockPathCollector {
         _h: &NodeHeader,
         keys: &[u64],
         values: &[u64],
-    ) -> btree_error::Result<()> {
+    ) -> btree_error::Result<Self::NodeSummary> {
         // Verify key's continuity.
         // The ordering of keys had been verified in unpack_node(),
         // so comparing the keys against the key range is sufficient.
@@ -221,7 +230,12 @@ impl NodeVisitor<u64> for BlockPathCollector {
         Ok(())
     }
 
-    fn visit_again(&self, _path: &[u64], _b: u64) -> btree_error::Result<()> {
+    fn visit_again(
+        &self,
+        _path: &[u64],
+        _b: u64,
+        _s: Self::NodeSummary,
+    ) -> btree_error::Result<()> {
         Ok(())
     }
 

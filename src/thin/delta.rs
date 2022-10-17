@@ -84,6 +84,8 @@ impl MappingRecorder {
 }
 
 impl NodeVisitor<BlockTime> for MappingRecorder {
+    type NodeSummary = ();
+
     fn visit(
         &self,
         _path: &[u64],
@@ -91,7 +93,7 @@ impl NodeVisitor<BlockTime> for MappingRecorder {
         _h: &NodeHeader,
         keys: &[u64],
         values: &[BlockTime],
-    ) -> btree::Result<()> {
+    ) -> btree::Result<Self::NodeSummary> {
         let mut inner = self.inner.lock().unwrap();
         for (k, v) in keys.iter().zip(values) {
             if let Some(m) = inner.builder.next(*k, v.block) {
@@ -101,7 +103,7 @@ impl NodeVisitor<BlockTime> for MappingRecorder {
         Ok(())
     }
 
-    fn visit_again(&self, _path: &[u64], _b: u64) -> btree::Result<()> {
+    fn visit_again(&self, _path: &[u64], _b: u64, _s: Self::NodeSummary) -> btree::Result<()> {
         Ok(())
     }
 

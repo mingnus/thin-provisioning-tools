@@ -149,6 +149,8 @@ impl RmapVisitor {
 }
 
 impl NodeVisitor<BlockTime> for RmapVisitor {
+    type NodeSummary = ();
+
     fn visit(
         &self,
         _path: &[u64],
@@ -156,7 +158,7 @@ impl NodeVisitor<BlockTime> for RmapVisitor {
         _h: &NodeHeader,
         keys: &[u64],
         values: &[BlockTime],
-    ) -> btree::Result<()> {
+    ) -> btree::Result<Self::NodeSummary> {
         let mut inner = self.inner.lock().unwrap();
         let inner = inner.deref_mut();
         for (k, v) in keys.iter().zip(values) {
@@ -173,7 +175,7 @@ impl NodeVisitor<BlockTime> for RmapVisitor {
         Ok(())
     }
 
-    fn visit_again(&self, _path: &[u64], _b: u64) -> btree::Result<()> {
+    fn visit_again(&self, _path: &[u64], _b: u64, _s: Self::NodeSummary) -> btree::Result<()> {
         Ok(())
     }
 
