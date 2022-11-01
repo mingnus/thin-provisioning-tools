@@ -13,6 +13,8 @@ mod tests;
 
 //------------------------------------------
 
+type DeferredList = BTreeMap<u64, Vec<u64>>;
+
 pub trait SubtreeSummary: Default + Clone {
     fn append(&mut self, other: &Self);
 }
@@ -137,7 +139,7 @@ impl<NS: SubtreeSummary + Send> BTreeWalker<NS> {
         visitor: &NV,
         krs: &[KeyRange],
         bs: &[u64],
-    ) -> (NS, Vec<BTreeError>)
+    ) -> (NS, Option<DeferredList>, Vec<BTreeError>)
     where
         NV: NodeVisitor<V, NodeSummary = NS>,
         V: Unpack,
@@ -145,6 +147,7 @@ impl<NS: SubtreeSummary + Send> BTreeWalker<NS> {
         assert_eq!(krs.len(), bs.len());
         let mut errs: Vec<BTreeError> = Vec::new();
         let mut sums = NS::default();
+        let mut deferred = DeferredList::new();
 
         let mut blocks = Vec::with_capacity(bs.len());
         let mut filtered_krs = Vec::with_capacity(krs.len());
@@ -184,7 +187,8 @@ impl<NS: SubtreeSummary + Send> BTreeWalker<NS> {
                 } else {
                     // FIXME: race detected
                     // the node is being checked and hasn't been finished yet
-                    eprintln!("race detected at path {:?} block {}", path, bs[i]);
+                    //eprintln!("race detected at path {:?} block {}", path, bs[i]);
+                    deferred.insert(bs[i], path.clone());
                 }
             }
         }
@@ -207,11 +211,16 @@ impl<NS: SubtreeSummary + Send> BTreeWalker<NS> {
                             self.set_fail(blocks[i], e);
                         }
                         Ok(b) => {
-                            if let Err(e) =
-                                self.walk_node(path, visitor, &filtered_krs[i], &b, false)
-                            {
+                            let (dlist, err) =
+                                self.walk_node(path, visitor, &filtered_krs[i], &b, false);
+
+                            if let Some(mut dlist) = dlist {
+                                deferred.append(&mut dlist);
+                            }
+                            if let Err(e) = err {
                                 errs.push(e);
                             }
+
                             // FIXME: eliminate extra querying?
                             sums.append(&self.get_summary(b.loc).unwrap_or_default());
                         }
@@ -220,7 +229,12 @@ impl<NS: SubtreeSummary + Send> BTreeWalker<NS> {
             }
         }
 
-        (sums, errs)
+        let deferred = if !deferred.is_empty() {
+            Some(deferred)
+        } else {
+            None
+        };
+        (sums, deferred, errs)
     }
 
     fn walk_node_<NV, V>(
@@ -230,7 +244,7 @@ impl<NS: SubtreeSummary + Send> BTreeWalker<NS> {
         kr: &KeyRange,
         b: &Block,
         is_root: bool,
-    ) -> Result<()>
+    ) -> (Option<DeferredList>, Result<()>)
     where
         NV: NodeVisitor<V, NodeSummary = NS>,
         V: Unpack,
@@ -245,22 +259,27 @@ impl<NS: SubtreeSummary + Send> BTreeWalker<NS> {
             )
             .keys_context(kr);
             self.set_fail(b.loc, e.clone());
-            return Err(e);
+            return (None, Err(e));
         }
 
-        let node =
-            unpack_node::<V>(path, b.get_data(), self.ignore_non_fatal, is_root).map_err(|e| {
+        let node = match unpack_node::<V>(path, b.get_data(), self.ignore_non_fatal, is_root) {
+            Ok(n) => n,
+            Err(e) => {
                 self.set_fail(b.loc, e.clone());
-                e
-            })?;
+                return (None, Err(e));
+            }
+        };
 
         match node {
             Internal { keys, values, .. } => {
-                let krs = split_key_ranges(path, kr, &keys)?;
-                let (sums, errs) = self.walk_nodes(path, visitor, &krs, &values);
+                let krs = match split_key_ranges(path, kr, &keys) {
+                    Ok(r) => r,
+                    Err(e) => return (None, Err(e)),
+                };
+                let (sums, deferred, errs) = self.walk_nodes(path, visitor, &krs, &values);
                 let e = self.build_aggregate(b.loc, errs); // implicitly calls set_fail()
                 self.set_summary(b.loc, sums);
-                return e;
+                (deferred, e)
             }
             Leaf {
                 header,
@@ -269,16 +288,15 @@ impl<NS: SubtreeSummary + Send> BTreeWalker<NS> {
             } => match visitor.visit(path, kr, &header, &keys, &values) {
                 Ok(s) => {
                     self.set_summary(b.loc, s);
+                    (None, Ok(()))
                 }
                 Err(e) => {
                     let e = BTreeError::Path(path.clone(), Box::new(e)).keys_context(kr);
                     self.set_fail(b.loc, e.clone());
-                    return Err(e);
+                    (None, Err(e))
                 }
             },
         }
-
-        Ok(())
     }
 
     // TODO: returns the summary of the node for the caller (walk_nodes()),
@@ -290,7 +308,7 @@ impl<NS: SubtreeSummary + Send> BTreeWalker<NS> {
         kr: &KeyRange,
         b: &Block,
         is_root: bool,
-    ) -> Result<()>
+    ) -> (Option<DeferredList>, Result<()>)
     where
         NV: NodeVisitor<V, NodeSummary = NS>,
         V: Unpack,
@@ -301,12 +319,17 @@ impl<NS: SubtreeSummary + Send> BTreeWalker<NS> {
         r
     }
 
-    pub fn walk<NV, V>(&self, path: &mut Vec<u64>, visitor: &NV, root: u64) -> Result<()>
+    pub fn walk_with_deferred_list<NV, V>(
+        &self,
+        path: &mut Vec<u64>,
+        visitor: &NV,
+        root: u64,
+    ) -> (Option<DeferredList>, Result<()>)
     where
         NV: NodeVisitor<V, NodeSummary = NS>,
         V: Unpack,
     {
-        let result = if self.sm_inc(root) > 0 {
+        let (deferred, result) = if self.sm_inc(root) > 0 {
             let summary = self.get_summary(root);
 
             // FIXME; there might be race while accessing these two maps
@@ -323,23 +346,27 @@ impl<NS: SubtreeSummary + Send> BTreeWalker<NS> {
                     // the node itself broke
                 }
 
-                Err(aggregate_error(errs))
-            } else {
-                if let Some(s) = summary {
-                    // ... it was clean.
-                    if let Err(ve) = visitor.visit_again(path, root, s) {
-                        // ... and the visitor isn't happy
-                        return Err(ve);
-                    }
-                } else {
-                    // FIXME: race detected
-                    // the node is being checked and hasn't been finished yet
-                    eprintln!("race detected at root {}", root);
+                (None, Err(aggregate_error(errs)))
+            } else if let Some(s) = summary {
+                // ... it was clean.
+                if let Err(ve) = visitor.visit_again(path, root, s) {
+                    // ... and the visitor isn't happy
+                    return (None, Err(ve));
                 }
-                Ok(())
+                (None, Ok(()))
+            } else {
+                // FIXME: race detected
+                // the node is being checked and hasn't been finished yet
+                //eprintln!("race detected at root {}", root);
+                let mut dlist = DeferredList::new();
+                dlist.insert(root, path.clone());
+                (Some(dlist), Ok(()))
             }
         } else {
-            let root = self.engine.read(root).map_err(|_| io_err(path))?;
+            let root = match self.engine.read(root).map_err(|_| io_err(path)) {
+                Ok(b) => b,
+                Err(e) => return (None, Err(e)),
+            };
             let kr = KeyRange {
                 start: None,
                 end: None,
@@ -349,11 +376,21 @@ impl<NS: SubtreeSummary + Send> BTreeWalker<NS> {
 
         if let Err(e) = visitor.end_walk() {
             if let Err(tree_err) = result {
-                return Err(BTreeError::Aggregate(vec![tree_err, e]));
+                return (deferred, Err(BTreeError::Aggregate(vec![tree_err, e])));
             }
         }
 
-        result
+        (deferred, result)
+    }
+
+    pub fn walk<NV, V>(&self, path: &mut Vec<u64>, visitor: &NV, root: u64) -> Result<()>
+    where
+        NV: NodeVisitor<V, NodeSummary = NS>,
+        V: Unpack,
+    {
+        // FIXME: return Err if the deferred list is not empty
+        let (_deferred, r) = self.walk_with_deferred_list(path, visitor, root);
+        r
     }
 }
 
@@ -367,7 +404,7 @@ fn walk_node_threaded_<NV, V, NS: SubtreeSummary + Send + 'static>(
     kr: &KeyRange,
     b: &Block,
     is_root: bool,
-) -> Result<()>
+) -> (Option<DeferredList>, Result<()>)
 where
     NV: NodeVisitor<V, NodeSummary = NS> + Send + Sync + 'static,
     V: Unpack,
@@ -382,21 +419,28 @@ where
         )
         .keys_context(kr);
         w.set_fail(b.loc, e.clone());
-        return Err(e);
+        return (None, Err(e));
     }
 
-    let node = unpack_node::<V>(path, b.get_data(), w.ignore_non_fatal, is_root).map_err(|e| {
-        w.set_fail(b.loc, e.clone());
-        e
-    })?;
+    let node = match unpack_node::<V>(path, b.get_data(), w.ignore_non_fatal, is_root) {
+        Ok(n) => n,
+        Err(e) => {
+            w.set_fail(b.loc, e.clone());
+            return (None, Err(e));
+        }
+    };
 
     match node {
         Internal { keys, values, .. } => {
-            let krs = split_key_ranges(path, kr, &keys)?;
-            let (sums, errs) = walk_nodes_threaded(w.clone(), path, pool, visitor, &krs, &values);
+            let krs = match split_key_ranges(path, kr, &keys) {
+                Ok(r) => r,
+                Err(e) => return (None, Err(e)),
+            };
+            let (sums, deferred, errs) =
+                walk_nodes_threaded(w.clone(), path, pool, visitor, &krs, &values);
             let e = w.build_aggregate(b.loc, errs); // implicitly calls set_fail()
             w.set_summary(b.loc, sums);
-            return e;
+            (deferred, e)
         }
         Leaf {
             header,
@@ -405,16 +449,15 @@ where
         } => match visitor.visit(path, kr, &header, &keys, &values) {
             Ok(s) => {
                 w.set_summary(b.loc, s);
+                (None, Ok(()))
             }
             Err(e) => {
                 let e = BTreeError::Path(path.to_vec(), Box::new(e)).keys_context(kr);
                 w.set_fail(b.loc, e.clone());
-                return Err(e);
+                (None, Err(e))
             }
         },
     }
-
-    Ok(())
 }
 
 fn walk_node_threaded<NV, V, NS: SubtreeSummary + Send + 'static>(
@@ -425,7 +468,7 @@ fn walk_node_threaded<NV, V, NS: SubtreeSummary + Send + 'static>(
     kr: &KeyRange,
     b: &Block,
     is_root: bool,
-) -> Result<()>
+) -> (Option<DeferredList>, Result<()>)
 where
     NV: NodeVisitor<V, NodeSummary = NS> + Send + Sync + 'static,
     V: Unpack,
@@ -443,7 +486,7 @@ fn walk_nodes_threaded<NV, V, NS: SubtreeSummary + Send + 'static>(
     visitor: Arc<NV>,
     krs: &[KeyRange],
     bs: &[u64],
-) -> (NS, Vec<BTreeError>)
+) -> (NS, Option<DeferredList>, Vec<BTreeError>)
 where
     NV: NodeVisitor<V, NodeSummary = NS> + Send + Sync + 'static,
     V: Unpack,
@@ -451,6 +494,7 @@ where
     assert_eq!(krs.len(), bs.len());
     let mut errs: Vec<BTreeError> = Vec::new();
     let mut sums = NS::default();
+    let deferred = Arc::new(Mutex::new(DeferredList::new()));
 
     let mut blocks = Vec::with_capacity(bs.len());
     let mut filtered_krs = Vec::with_capacity(krs.len());
@@ -490,7 +534,8 @@ where
             } else {
                 // FIXME: race detected
                 // the node is being checked and hasn't been finished yet
-                eprintln!("race detected at path {:?} block {}", path, bs[i]);
+                //eprintln!("race detected at path {:?} block {}", path, bs[i]);
+                deferred.lock().unwrap().insert(bs[i], path.to_vec());
             }
         }
     }
@@ -521,10 +566,17 @@ where
                         let kr = filtered_krs[i].clone();
                         let errs = child_errs.clone();
                         let mut path = path.to_vec();
+                        let deferred = deferred.clone();
 
                         pool.execute(move || {
-                            if let Err(e) = w.walk_node(&mut path, visitor.as_ref(), &kr, &b, false)
-                            {
+                            let (dlist, e) =
+                                w.walk_node(&mut path, visitor.as_ref(), &kr, &b, false);
+
+                            if let Some(mut dlist) = dlist {
+                                let mut deferred = deferred.lock().unwrap();
+                                deferred.append(&mut dlist);
+                            }
+                            if let Err(e) = e {
                                 let mut errs = errs.lock().unwrap();
                                 errs.push(e);
                             }
@@ -545,21 +597,28 @@ where
         }
     }
 
-    (sums, errs)
+    let deferred = Arc::try_unwrap(deferred).unwrap().into_inner().unwrap();
+    let deferred = if !deferred.is_empty() {
+        Some(deferred)
+    } else {
+        None
+    };
+
+    (sums, deferred, errs)
 }
 
-pub fn walk_threaded<NV, V, NS: SubtreeSummary + Send + Sync + 'static>(
+pub fn walk_threaded_with_deferred_list<NV, V, NS: SubtreeSummary + Send + Sync + 'static>(
     path: &mut Vec<u64>,
     w: Arc<BTreeWalker<NS>>,
     pool: &ThreadPool,
     visitor: Arc<NV>,
     root: u64,
-) -> Result<()>
+) -> (Option<DeferredList>, Result<()>)
 where
     NV: NodeVisitor<V, NodeSummary = NS> + Send + Sync + 'static,
     V: Unpack,
 {
-    let result = if w.sm_inc(root) > 0 {
+    let (deferred, result) = if w.sm_inc(root) > 0 {
         let summary = w.get_summary(root);
 
         // FIXME; there might be race while accessing these two maps
@@ -576,23 +635,27 @@ where
                 // the node itself broke
             }
 
-            Err(aggregate_error(errs))
-        } else {
-            if let Some(s) = summary {
-                // ... it was clean.
-                if let Err(ve) = visitor.visit_again(path, root, s) {
-                    // ... and the visitor isn't happy
-                    return Err(ve);
-                }
-            } else {
-                // FIXME: race detected
-                // the node is being checked and hasn't been finished yet
-                eprintln!("race detected at root {}", root);
+            (None, Err(aggregate_error(errs)))
+        } else if let Some(s) = summary {
+            // ... it was clean.
+            if let Err(ve) = visitor.visit_again(path, root, s) {
+                // ... and the visitor isn't happy
+                return (None, Err(ve));
             }
-            Ok(())
+            (None, Ok(()))
+        } else {
+            // FIXME: race detected
+            // the node is being checked and hasn't been finished yet
+            //eprintln!("race detected at root {}", root);
+            let mut dlist = DeferredList::new();
+            dlist.insert(root, path.clone());
+            (Some(dlist), Ok(()))
         }
     } else {
-        let root = w.engine.read(root).map_err(|_| io_err(path))?;
+        let root = match w.engine.read(root).map_err(|_| io_err(path)) {
+            Ok(b) => b,
+            Err(e) => return (None, Err(e)),
+        };
         let kr = KeyRange {
             start: None,
             end: None,
@@ -602,11 +665,26 @@ where
 
     if let Err(e) = visitor.end_walk() {
         if let Err(tree_err) = result {
-            return Err(BTreeError::Aggregate(vec![tree_err, e]));
+            return (deferred, Err(BTreeError::Aggregate(vec![tree_err, e])));
         }
     }
 
-    result
+    (deferred, result)
+}
+
+pub fn walk_threaded<NV, V, NS: SubtreeSummary + Send + Sync + 'static>(
+    path: &mut Vec<u64>,
+    w: Arc<BTreeWalker<NS>>,
+    pool: &ThreadPool,
+    visitor: Arc<NV>,
+    root: u64,
+) -> Result<()>
+where
+    NV: NodeVisitor<V, NodeSummary = NS> + Send + Sync + 'static,
+    V: Unpack,
+{
+    let (_deferred, r) = walk_threaded_with_deferred_list(path, w, pool, visitor, root);
+    r
 }
 
 //------------------------------------------

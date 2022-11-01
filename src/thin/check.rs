@@ -144,6 +144,8 @@ fn check_mapping_bottom_level(
 
     if roots.len() > 64 {
         let errs = Arc::new(Mutex::new(Vec::new()));
+        let deferred_map = Arc::new(Mutex::new(BTreeMap::new()));
+
         for (thin_id, (path, root)) in roots.iter() {
             let thin_id = *thin_id;
             let data_sm = data_sm.clone();
@@ -153,18 +155,54 @@ fn check_mapping_bottom_level(
             let mut path = path.clone();
             let errs = errs.clone();
             let mapped = mapped_blocks.clone();
+            let dmap = deferred_map.clone();
 
             ctx.pool.execute(move || {
-                if let Err(e) = w.walk(&mut path, &v, root) {
+                let (dlist, result) = w.walk_with_deferred_list(&mut path, &v, root);
+
+                if let Err(e) = result {
                     let mut errs = errs.lock().unwrap();
                     errs.push(e);
                 }
 
                 let cnt = v.mapped_blocks.load(Ordering::SeqCst);
                 mapped.lock().unwrap().insert(thin_id, cnt);
+
+                if let Some(list) = dlist {
+                    dmap.lock().unwrap().insert(thin_id, list);
+                }
             });
         }
         ctx.pool.join();
+
+        // Second stage: Visit the nodes where race happens.
+        // FIXME: Ugly. It should be done by the BTreeWalker.
+        let dmap = Arc::try_unwrap(deferred_map).unwrap().into_inner().unwrap();
+        for (thin_id, dlist) in dmap {
+            // actually we don't need the data sm here
+            let data_sm = data_sm.clone();
+            let v = BottomLevelVisitor::new(data_sm);
+            let mut total = 0;
+
+            for (b, mut path) in dlist {
+                // FIXME: check errors
+                let _ = w.walk(&mut path, &v, b);
+                total += 1;
+            }
+
+            ctx.report.info(&format!(
+                "thin device {} has {} deferred blocks",
+                thin_id, total
+            ));
+            let cnt = v.mapped_blocks.load(Ordering::SeqCst);
+            mapped_blocks
+                .lock()
+                .unwrap()
+                .entry(thin_id)
+                .and_modify(|c| *c += cnt)
+                .or_insert(cnt);
+        }
+
         let errs = Arc::try_unwrap(errs).unwrap().into_inner().unwrap();
         if !errs.is_empty() {
             failed = true;
