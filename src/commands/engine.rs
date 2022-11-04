@@ -85,10 +85,7 @@ fn metadata_snap_flag(matches: &ArgMatches) -> bool {
     ms.unwrap()
 }
 
-pub fn parse_engine_opts(
-    tool: ToolType,
-    matches: &ArgMatches,
-) -> Result<EngineOptions> {
+pub fn parse_engine_opts(tool: ToolType, matches: &ArgMatches) -> Result<EngineOptions> {
     let engine_type = parse_type(matches)?;
     let use_metadata_snap = (tool == ToolType::Thin) && metadata_snap_flag(matches);
 
@@ -189,7 +186,11 @@ impl<'a, P: AsRef<Path>> EngineBuilder<'a, P> {
     pub fn build(self) -> Result<Arc<dyn IoEngine + Send + Sync>> {
         let engine: Arc<dyn IoEngine + Send + Sync> = match self.opts.engine_type {
             #[cfg(feature = "io_uring")]
-            EngineType::Async => Arc::new(AsyncIoEngine::new_with(self.path, self.write, self.exclusive)?),
+            EngineType::Async => Arc::new(AsyncIoEngine::new_with(
+                self.path,
+                self.write,
+                self.exclusive,
+            )?),
             EngineType::Sync => Arc::new(SyncIoEngine::new(self.path, self.exclusive)?),
             EngineType::Spindle => {
                 let valid_blocks = match self.opts.tool {

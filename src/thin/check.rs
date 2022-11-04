@@ -145,18 +145,21 @@ struct Context {
 // We know the metadata area is limited to 16G, so u32 is large enough
 // hold block numbers.
 
-enum NodeInfo {
-    Internal {
-        keys: KeyRange,
+#[derive(Debug, Clone)]
+struct InternalNodeInfo {
+    keys: KeyRange,
 
-        // Errors found in _this_ node only; children may have errors
-        error: Option<anyhow::Error>,
-        children_are_leaves: bool,
-        children: Vec<u32>,
-    },
-    Leaf {
-        keys: KeyRange,
-    },
+    // Errors found in _this_ node only; children may have errors
+    error: Option<btree::BTreeError>,
+    children_are_leaves: bool,
+    children: Vec<u32>,
+    nr_entries: u64,
+}
+
+#[derive(Debug, Clone)]
+enum NodeInfo {
+    Internal(InternalNodeInfo),
+    Leaf { keys: KeyRange, nr_entries: u64 },
 }
 
 /// block_nr -> node info
@@ -218,8 +221,13 @@ fn read_node_(
         if depth == 0 {
             let mut sm = metadata_sm.lock().unwrap();
             for (loc, kr) in values.iter().zip(child_keys) {
-                sm.inc(*loc, 1).expect("space map inc failed");
-                nodes.insert(*loc as u32, NodeInfo::Leaf { keys: kr.clone() });
+                nodes.insert(
+                    *loc as u32,
+                    NodeInfo::Leaf {
+                        keys: kr.clone(),
+                        nr_entries: 0,
+                    },
+                );
             }
         } else {
             // we could error each child rather than the current node
@@ -238,25 +246,28 @@ fn read_node_(
                         nodes,
                     );
                 } else {
-                    nodes.insert(
-                        values[i] as u32,
-                        NodeInfo::Internal {
-                            keys: kr.clone(),
-                            error: Some(anyhow!("io error")),
-                            children_are_leaves: depth == 0,
-                            children: Vec::new(),
-                        },
-                    );
+                    // FIXME: we don't have to store the node content if it is broke
+                    let info = InternalNodeInfo {
+                        keys: kr.clone(),
+                        error: Some(BTreeError::IoError),
+                        children_are_leaves: depth == 0,
+                        children: Vec::new(),
+                        nr_entries: 0,
+                    };
+                    nodes.insert(values[i] as u32, NodeInfo::Internal(info));
                 }
             }
         }
 
-        Ok(NodeInfo::Internal {
+        let info = InternalNodeInfo {
             keys: kr.clone(),
             error: None,
             children_are_leaves: depth == 0,
             children,
-        })
+            nr_entries: 0,
+        };
+
+        Ok(NodeInfo::Internal(info))
     } else {
         return Err(anyhow!("btree nodes are not all at the same depth."));
     }
@@ -287,15 +298,14 @@ fn read_node(
         nodes,
     ) {
         Err(e) => {
-            nodes.insert(
-                block_nr,
-                NodeInfo::Internal {
-                    keys: keys.clone(),
-                    error: Some(e),
-                    children_are_leaves: depth == 0,
-                    children: Vec::new(),
-                },
-            );
+            let info = InternalNodeInfo {
+                keys: keys.clone(),
+                error: Some(BTreeError::IoError), // FIXME: gather the error from the children
+                children_are_leaves: depth == 0,
+                children: Vec::new(),
+                nr_entries: 0,
+            };
+            nodes.insert(block_nr, NodeInfo::Internal(info));
         }
         Ok(n) => {
             nodes.insert(block_nr, n);
@@ -343,6 +353,7 @@ fn read_internal_nodes(
             root as u32,
             NodeInfo::Leaf {
                 keys: KeyRange::new(),
+                nr_entries: 0,
             },
         );
         return;
@@ -360,17 +371,49 @@ fn read_internal_nodes(
             nodes,
         );
     } else {
+        let info = InternalNodeInfo {
+            keys: keys.clone(),
+            error: Some(BTreeError::IoError),
+            children_are_leaves: depth == 0,
+            children: Vec::new(),
+            nr_entries: 0,
+        };
         // FIXME: factor out common code
-        nodes.insert(
-            root,
-            NodeInfo::Internal {
-                keys: keys.clone(),
-                error: Some(anyhow!("io error")),
-                children_are_leaves: depth == 0,
-                children: Vec::new(),
-            },
-        );
+        nodes.insert(root, NodeInfo::Internal(info));
     }
+}
+
+// FIXME: we cannot do this if info is a borrow from nodes
+fn visit_children(info: &mut InternalNodeInfo, nodes: &mut NodeMap) -> u64 {
+    for b in info.children.iter() {
+        info.nr_entries += visit_node(*b, nodes);
+    }
+    info.nr_entries
+}
+
+fn visit_node(b: u32, nodes: &mut NodeMap) -> u64 {
+    let nr_entries = match nodes.get(&b).cloned() {
+        Some(NodeInfo::Internal(info)) => {
+            if info.nr_entries > 0 {
+                info.nr_entries
+            } else {
+                let mut nr_entries = 0;
+                for b in info.children.iter() {
+                    nr_entries += visit_node(*b, nodes);
+                }
+                nr_entries
+            }
+        }
+        Some(NodeInfo::Leaf { nr_entries, .. }) => nr_entries,
+        _ => 0,
+    };
+
+    // FIXME: avoid separated query & update
+    if let Some(NodeInfo::Internal(info)) = nodes.get_mut(&b) {
+        info.nr_entries = nr_entries;
+    }
+
+    nr_entries
 }
 
 // Check the mappings filling in the data_sm as we go.
@@ -380,6 +423,7 @@ fn check_mapping_bottom_level(
     data_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
     roots: &BTreeMap<u64, (Vec<u64>, u64)>,
     ignore_non_fatal: bool,
+    devs: &BTreeMap<u64, DeviceDetail>,
 ) -> Result<()> {
     ctx.report.set_sub_title("mapping tree");
 
@@ -397,31 +441,36 @@ fn check_mapping_bottom_level(
     // order.
     // FIXME: use with_capacity
     let mut leaves = Vec::new();
-    for (loc, info) in nodes {
+    for (loc, info) in nodes.iter() {
         match info {
-            NodeInfo::Leaf { keys } => {
-                leaves.push(loc as u64);
+            NodeInfo::Leaf { .. } => {
+                leaves.push(*loc as u64);
             }
             _ => {
                 // do nothing
             }
         }
     }
-
+    //std::thread::sleep(std::time::Duration::from_secs(30));
     // Process chunks of leaves at once so the io engine can aggregate reads.
-    let mut chunk_start = 0;
     let leaves = Arc::new(leaves);
+    let nodes = Arc::new(Mutex::new(nodes));
+    let mut chunk_start = 0;
     let tree_roots = Arc::new(tree_roots);
     while chunk_start < leaves.len() {
-        let len = std::cmp::min(16 * 1024, leaves.len() - chunk_start);
+        let len = std::cmp::min(1024, leaves.len() - chunk_start);
         let engine = ctx.engine.clone();
         let data_sm = data_sm.clone();
         let leaves = leaves.clone();
         let tree_roots = tree_roots.clone();
+        let nodes = nodes.clone();
 
         ctx.pool.execute(move || {
             let c = &leaves[chunk_start..(chunk_start + len)];
+            //std::thread::sleep(std::time::Duration::from_secs(30));
+
             let blocks = engine.read_many(c).expect("lazy");
+
             for (loc, b) in c.iter().zip(blocks) {
                 let b = b.expect("lazy");
                 verify_checksum(&b).expect("lazy programmer");
@@ -432,11 +481,30 @@ fn check_mapping_bottom_level(
                     unpack_node::<BlockTime>(&mut path, b.get_data(), ignore_non_fatal, is_root)
                         .expect("lazy");
                 match node {
-                    Node::Leaf { values, .. } => {
+                    Node::Leaf { keys, values, .. } => {
                         // FIXME: check keys are within range
-                        let mut data_sm = data_sm.lock().unwrap();
-                        for v in values {
-                            data_sm.inc(v.block, 1).expect("data_sm.inc() failed");
+                        {
+                            let mut data_sm = data_sm.lock().unwrap();
+                            for v in values {
+                                data_sm.inc(v.block, 1).expect("data_sm.inc() failed");
+                            }
+                        }
+
+                        {
+                            let mut nodes = nodes.lock().unwrap();
+                            nodes.entry(*loc as u32).and_modify(|info| {
+                                if let NodeInfo::Leaf {
+                                    keys: ref mut k,
+                                    ref mut nr_entries,
+                                } = info
+                                {
+                                    k.start = keys.first().cloned();
+                                    k.end = keys.last().cloned();
+                                    *nr_entries = keys.len() as u64;
+                                } else {
+                                    panic!("unexpected node type");
+                                }
+                            });
                         }
                     }
                     _ => {
@@ -449,56 +517,35 @@ fn check_mapping_bottom_level(
     }
     ctx.pool.join();
 
-    /*
-    let w = Arc::new(BTreeWalker::new_with_sm(
-        ctx.engine.clone(),
-        metadata_sm.clone(),
-        ignore_non_fatal,
-    )?);
+    eprintln!("stage2");
+    // stage2: DFS traverse subtree to gather subtree information (single threaded)
+    let mut nodes = Arc::try_unwrap(nodes).unwrap().into_inner().unwrap();
+    let tree_roots = Arc::try_unwrap(tree_roots).unwrap();
+    for root in tree_roots.iter() {
+        visit_node(*root as u32, &mut nodes);
+    }
 
-    // We want to print out errors as we progress, so we aggregate for each thin and print
-    // at that point.
-    let mut failed = false;
-
-    if roots.len() > 64 {
-        let errs = Arc::new(Mutex::new(Vec::new()));
-        for (path, root) in roots.values() {
-            let data_sm = data_sm.clone();
-            let root = *root;
-            let v = BottomLevelVisitor { data_sm };
-            let w = w.clone();
-            let mut path = path.clone();
-            let errs = errs.clone();
-
-            ctx.pool.execute(move || {
-                if let Err(e) = w.walk(&mut path, &v, root) {
-                    let mut errs = errs.lock().unwrap();
-                    errs.push(e);
+    for ((thin_id, (_, root)), details) in roots.into_iter().zip(devs.values()) {
+        match nodes.get(&(*root as u32)) {
+            Some(NodeInfo::Internal(info)) => {
+                if info.nr_entries != details.mapped_blocks {
+                    eprintln!("Thin device {} has unexpected number of mapped block, expected {}, actual {}", thin_id,
+                        details.mapped_blocks, info.nr_entries);
                 }
-            });
-        }
-        ctx.pool.join();
-        let errs = Arc::try_unwrap(errs).unwrap().into_inner().unwrap();
-        if !errs.is_empty() {
-            ctx.report.fatal(&format!("{}", aggregate_error(errs)));
-            failed = true;
-        }
-    } else {
-        for (path, root) in roots.values() {
-            let w = w.clone();
-            let data_sm = data_sm.clone();
-            let root = *root;
-            let v = Arc::new(BottomLevelVisitor { data_sm });
-            let mut path = path.clone();
-
-            if let Err(e) = walk_threaded(&mut path, w, &ctx.pool, v, root) {
-                failed = true;
-                ctx.report.fatal(&format!("{}", e));
+            }
+            Some(NodeInfo::Leaf { nr_entries, .. }) => {
+                if *nr_entries != details.mapped_blocks {
+                    eprintln!("Thin device {} has unexpected number of mapped block, expected {}, actual {}", thin_id,
+                        details.mapped_blocks, nr_entries);
+                }
+            }
+            _ => {
+                eprintln!("error");
             }
         }
     }
 
-    if failed {
+    /*if failed {
         Err(anyhow!("Check of mappings failed"))
     } else {
         Ok(())
@@ -610,7 +657,14 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
     // mapping bottom level
     let root = unpack::<SMRoot>(&sb.data_sm_root[0..])?;
     let data_sm = core_sm(root.nr_blocks, nr_devs as u32);
-    check_mapping_bottom_level(&ctx, &metadata_sm, &data_sm, &roots, opts.ignore_non_fatal)?;
+    check_mapping_bottom_level(
+        &ctx,
+        &metadata_sm,
+        &data_sm,
+        &roots,
+        opts.ignore_non_fatal,
+        &devs,
+    )?;
 
     // trees in metadata snap
     if sb.metadata_snap > 0 {
@@ -645,6 +699,7 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
             &data_sm,
             &roots_snap,
             opts.ignore_non_fatal,
+            &devs,
         )?;
     }
 
@@ -785,7 +840,7 @@ pub fn check_with_maps(
     // mapping bottom level
     let root = unpack::<SMRoot>(&sb.data_sm_root[0..])?;
     let data_sm = core_sm(root.nr_blocks, nr_devs as u32);
-    check_mapping_bottom_level(&ctx, &metadata_sm, &data_sm, &roots, false)?;
+    check_mapping_bottom_level(&ctx, &metadata_sm, &data_sm, &roots, false, &devs)?;
 
     //-----------------------------------------
 

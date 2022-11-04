@@ -223,13 +223,12 @@ impl IoEngine for SyncIoEngine {
     fn read_many(&self, blocks: &[u64]) -> Result<Vec<Result<Block>>> {
         let input = self.get();
         Self::read_many_(&*input, &blocks)
-        /*
-        let mut bs = Vec::new();
+
+        /*let mut bs = Vec::new();
         for b in blocks {
             bs.push(SyncIoEngine::read_(&mut input, *b));
         }
-        Ok(bs)
-        */
+        Ok(bs)*/
     }
 
     fn write(&self, b: &Block) -> Result<()> {

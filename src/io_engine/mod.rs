@@ -1,8 +1,8 @@
 pub mod base;
-pub mod spindle;
-pub mod sync;
 pub mod buffer;
 pub mod copier;
+pub mod spindle;
+pub mod sync;
 pub mod sync_copier;
 pub mod utils;
 
@@ -18,5 +18,3 @@ pub use crate::io_engine::async_::AsyncIoEngine;
 
 #[cfg(test)]
 pub mod core;
-
-
