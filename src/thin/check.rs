@@ -430,16 +430,20 @@ fn check_mapping_bottom_level(
     let mut nodes = BTreeMap::new();
     let mut tree_roots = BTreeSet::new();
 
+    let start = std::time::Instant::now();
     let mut last = 0;
     for (thin_id, (_path, root)) in roots {
         tree_roots.insert(*root);
         read_internal_nodes(ctx, metadata_sm, *root as u32, ignore_non_fatal, &mut nodes);
         last = nodes.len();
     }
+    let duration = start.elapsed();
+    eprintln!("read_internal_nodes: {:?}", duration);
 
     // Build a vec of the leaf locations.  These will be in disk location
     // order.
     // FIXME: use with_capacity
+    let start = std::time::Instant::now();
     let mut leaves = Vec::new();
     for (loc, info) in nodes.iter() {
         match info {
@@ -451,6 +455,10 @@ fn check_mapping_bottom_level(
             }
         }
     }
+    let duration = start.elapsed();
+    eprintln!("collecting leaf nodes blocknr: {:?}", duration);
+
+    let start = std::time::Instant::now();
     //std::thread::sleep(std::time::Duration::from_secs(30));
     // Process chunks of leaves at once so the io engine can aggregate reads.
     let leaves = Arc::new(leaves);
@@ -516,15 +524,20 @@ fn check_mapping_bottom_level(
         chunk_start += len;
     }
     ctx.pool.join();
+    let duration = start.elapsed();
+    eprintln!("reading leaf nodes: {:?}", duration);
 
-    eprintln!("stage2");
+    let start = std::time::Instant::now();
     // stage2: DFS traverse subtree to gather subtree information (single threaded)
     let mut nodes = Arc::try_unwrap(nodes).unwrap().into_inner().unwrap();
     let tree_roots = Arc::try_unwrap(tree_roots).unwrap();
     for root in tree_roots.iter() {
         visit_node(*root as u32, &mut nodes);
     }
+    let duration = start.elapsed();
+    eprintln!("counting mapped blocks: {:?}", duration);
 
+    let start = std::time::Instant::now();
     for ((thin_id, (_, root)), details) in roots.into_iter().zip(devs.values()) {
         match nodes.get(&(*root as u32)) {
             Some(NodeInfo::Internal(info)) => {
@@ -544,6 +557,8 @@ fn check_mapping_bottom_level(
             }
         }
     }
+    let duration = start.elapsed();
+    eprintln!("checking mapped blocks: {:?}", duration);
 
     /*if failed {
         Err(anyhow!("Check of mappings failed"))
@@ -584,6 +599,12 @@ fn mk_context(opts: &ThinCheckOptions) -> Result<Context> {
 }
 
 pub fn check(opts: ThinCheckOptions) -> Result<()> {
+    eprintln!(
+        "size of InternalNodeInfo: {:?}",
+        std::mem::size_of::<InternalNodeInfo>()
+    );
+    eprintln!("size of NodeInfo: {:?}", std::mem::size_of::<NodeInfo>());
+
     let ctx = mk_context(&opts)?;
 
     // FIXME: temporarily get these out
@@ -706,6 +727,7 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
     //-----------------------------------------
 
     report.set_sub_title("data space map");
+    let start = std::time::Instant::now();
     let root = unpack::<SMRoot>(&sb.data_sm_root[0..])?;
     let data_leaks = check_disk_space_map(
         engine.clone(),
@@ -715,10 +737,13 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
         metadata_sm.clone(),
         opts.ignore_non_fatal,
     )?;
+    let duration = start.elapsed();
+    eprintln!("checking data space map: {:?}", duration);
 
     //-----------------------------------------
 
     report.set_sub_title("metadata space map");
+    let start = std::time::Instant::now();
     let root = unpack::<SMRoot>(&sb.metadata_sm_root[0..])?;
     report.to_stdout(&format!(
         "METADATA_FREE_BLOCKS={}",
@@ -733,6 +758,8 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
         metadata_sm.clone(),
         opts.ignore_non_fatal,
     )?;
+    let duration = start.elapsed();
+    eprintln!("checking metadata space map: {:?}", duration);
 
     //-----------------------------------------
 
