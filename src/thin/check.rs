@@ -87,8 +87,8 @@ fn verify_checksum(b: &Block) -> Result<()> {
 
 fn is_seen(loc: u32, metadata_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>) -> bool {
     let mut sm = metadata_sm.lock().unwrap();
-    sm.inc(loc as u64, 1).expect("space map inc failed");
-    sm.get(loc as u64).unwrap_or(0) > 1
+    let old = sm.inc_one(loc as u64).expect("space map inc failed");
+    old > 0
 }
 
 #[allow(clippy::too_many_arguments)]
