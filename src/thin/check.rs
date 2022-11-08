@@ -22,58 +22,6 @@ use crate::thin::superblock::*;
 
 //------------------------------------------
 
-struct BottomLevelVisitor {
-    data_sm: ASpaceMap,
-}
-
-//------------------------------------------
-
-impl NodeVisitor<BlockTime> for BottomLevelVisitor {
-    fn visit(
-        &self,
-        _path: &[u64],
-        _kr: &KeyRange,
-        _h: &NodeHeader,
-        _k: &[u64],
-        values: &[BlockTime],
-    ) -> btree::Result<()> {
-        // FIXME: do other checks
-
-        if values.is_empty() {
-            return Ok(());
-        }
-
-        let mut data_sm = self.data_sm.lock().unwrap();
-
-        let mut start = values[0].block;
-        let mut len = 1;
-
-        for b in values.iter().skip(1) {
-            let block = b.block;
-            if block == start + len {
-                len += 1;
-            } else {
-                data_sm.inc(start, len).unwrap();
-                start = block;
-                len = 1;
-            }
-        }
-
-        data_sm.inc(start, len).unwrap();
-        Ok(())
-    }
-
-    fn visit_again(&self, _path: &[u64], _b: u64) -> btree::Result<()> {
-        Ok(())
-    }
-
-    fn end_walk(&self) -> btree::Result<()> {
-        Ok(())
-    }
-}
-
-//------------------------------------------
-
 fn inc_superblock(sm: &ASpaceMap) -> Result<()> {
     let mut sm = sm.lock().unwrap();
     sm.inc(SUPERBLOCK_LOCATION, 1)?;
