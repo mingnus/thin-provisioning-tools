@@ -182,7 +182,7 @@ fn is_seen(
 ) -> bool {
     let mut sm = metadata_sm.lock().unwrap();
     sm.inc(loc as u64, 1).expect("space map inc failed");
-    nodes.contains_key(&loc)
+    sm.get(loc as u64).unwrap_or(0) > 1 // nodes.contains_key(&loc)
 }
 
 fn read_node_(
