@@ -17,6 +17,11 @@ pub trait SpaceMap {
 
     fn inc(&mut self, begin: u64, len: u64) -> Result<()>;
 
+    /// Returns the old ref count
+    fn inc_one(&mut self, b: u64) -> Result<u32> {
+        return Ok(0);
+    }
+
     /// Returns true if the block is now free
     fn dec(&mut self, b: u64) -> Result<bool> {
         let old = self.get(b)?;
@@ -112,6 +117,19 @@ where
             }
         }
         Ok(())
+    }
+
+    fn inc_one(&mut self, b: u64) -> Result<u32> {
+        let c = &mut self.counts[b as usize];
+        let old = *c;
+        assert!(old < V::max_value());
+        if *c == V::from(0u8) {
+            self.nr_allocated += 1;
+            *c = V::from(1u8);
+        } else {
+            *c += V::from(1u8);
+        }
+        Ok(old.into())
     }
 
     fn alloc(&mut self) -> Result<Option<u64>> {
