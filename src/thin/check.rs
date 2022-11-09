@@ -122,6 +122,8 @@ enum NodeType {
 
 struct NodeMap {
     node_type: FixedBitSet,
+    leaf_nodes: FixedBitSet,
+    nr_leaves: u32,
     internal_info: Vec<InternalNodeInfo>,
     internal_map: HashMap<u32, u32>,
     leaf_info: Vec<LeafNodeInfo>,
@@ -134,6 +136,8 @@ impl NodeMap {
     fn new(nr_blocks: u32) -> NodeMap {
         NodeMap {
             node_type: FixedBitSet::with_capacity((nr_blocks as usize) * 2),
+            leaf_nodes: FixedBitSet::with_capacity(nr_blocks as usize),
+            nr_leaves: 0,
             internal_info: Vec::new(),
             internal_map: HashMap::new(),
             leaf_info: Vec::new(),
@@ -163,6 +167,8 @@ impl NodeMap {
         match t {
             NodeType::Leaf => {
                 self.node_type.insert(blocknr as usize * 2 + 1);
+                self.leaf_nodes.insert(blocknr as usize);
+                self.nr_leaves += 1;
             }
             NodeType::Internal => {
                 self.node_type.insert(blocknr as usize * 2);
@@ -173,6 +179,15 @@ impl NodeMap {
             }
             _ => {}
         }
+    }
+
+    fn update_leaf_node(&mut self, blocknr: u32, info: LeafNodeInfo) -> Result<()> {
+        if self.get_type(blocknr) != NodeType::Leaf {
+            return Err(anyhow!("type changed"));
+        }
+        self.leaf_map.insert(blocknr, self.leaf_info.len() as u32);
+        self.leaf_info.push(info);
+        Ok(())
     }
 
     fn insert_internal_node(&mut self, blocknr: u32, info: InternalNodeInfo) -> Result<()> {
@@ -237,7 +252,7 @@ fn read_node_(
 
     use btree::Node::*;
     if let Internal { keys, values, .. } = node {
-        let children = values.iter().map(|v| *v as u32).collect::<Vec<u32>>();
+        let children = values.iter().map(|v| *v as u32).collect::<Vec<u32>>(); // FIXME: slow
         let child_keys = split_key_ranges(&path, kr, &keys)?;
 
         // filter out previously visited nodes
@@ -444,27 +459,18 @@ fn check_mapping_bottom_level(
     let duration = start.elapsed();
     eprintln!("read_internal_nodes: {:?}", duration);
     eprintln!("nr internal nodes: {}", nodes.internal_info.len());
+    eprintln!("nr leaves: {}", nodes.nr_leaves);
     eprintln!("nr errors: {}", nodes.node_errors.len());
-/*
+
     // Build a vec of the leaf locations.  These will be in disk location
     // order.
-    // FIXME: use with_capacity
     let start = std::time::Instant::now();
-    let mut leaves = Vec::new();
-    for (loc, info) in nodes.iter() {
-        match info {
-            NodeInfo::Leaf { .. } => {
-                leaves.push(*loc as u64);
-            }
-            _ => {
-                // do nothing
-            }
-        }
+    let mut leaves = Vec::with_capacity(nodes.nr_leaves as usize);
+    for loc in nodes.leaf_nodes.ones() {
+        leaves.push(loc as u64);
     }
     let duration = start.elapsed();
     eprintln!("collecting leaf nodes blocknr: {:?}", duration);
-
-    return Ok(());
 
     let start = std::time::Instant::now();
     //std::thread::sleep(std::time::Duration::from_secs(30));
@@ -508,19 +514,19 @@ fn check_mapping_bottom_level(
 
                         {
                             let mut nodes = nodes.lock().unwrap();
-                            nodes.entry(*loc as u32).and_modify(|info| {
-                                if let NodeInfo::Leaf {
-                                    keys: ref mut k,
-                                    ref mut nr_entries,
-                                } = info
-                                {
-                                    k.start = keys.first().cloned();
-                                    k.end = keys.last().cloned();
-                                    *nr_entries = keys.len() as u64;
-                                } else {
+                            match nodes.get_type(*loc as u32) {
+                                NodeType::Leaf => {
+                                    // FIXME: copy the min & max key instead
+                                    let info = LeafNodeInfo {
+                                        keys: KeyRange {start: keys.first().cloned(), end: keys.last().cloned()},
+                                        nr_entries: keys.len() as u64,
+                                    };
+                                    nodes.update_leaf_node(*loc as u32, info);
+                                }
+                                _ => {
                                     panic!("unexpected node type");
                                 }
-                            });
+                            }
                         }
                     }
                     _ => {
@@ -534,7 +540,7 @@ fn check_mapping_bottom_level(
     ctx.pool.join();
     let duration = start.elapsed();
     eprintln!("reading leaf nodes: {:?}", duration);
-
+/*
     let start = std::time::Instant::now();
     // stage2: DFS traverse subtree to gather subtree information (single threaded)
     let mut nodes = Arc::try_unwrap(nodes).unwrap().into_inner().unwrap();
