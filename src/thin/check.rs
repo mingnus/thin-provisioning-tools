@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
-use std::collections::{BTreeMap, BTreeSet};
+use fixedbitset::FixedBitSet;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::Path;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -93,6 +94,7 @@ struct Context {
 // We know the metadata area is limited to 16G, so u32 is large enough
 // hold block numbers.
 
+// TODO: store the keys
 #[derive(Debug, Clone)]
 struct InternalNodeInfo {
     keys: KeyRange,
@@ -105,34 +107,117 @@ struct InternalNodeInfo {
 }
 
 #[derive(Debug, Clone)]
-enum NodeInfo {
-    Internal(InternalNodeInfo),
-    Leaf { keys: KeyRange, nr_entries: u64 },
+struct LeafNodeInfo {
+    keys: KeyRange,
+    nr_entries: u64,
 }
 
-/// block_nr -> node info
-type NodeMap = BTreeMap<u32, NodeInfo>;
+#[derive(PartialEq)]
+enum NodeType {
+    None,
+    Internal,
+    Leaf,
+    Error,
+}
+
+struct NodeMap {
+    node_type: FixedBitSet,
+    internal_info: Vec<InternalNodeInfo>,
+    internal_map: HashMap<u32, u32>,
+    leaf_info: Vec<LeafNodeInfo>,
+    leaf_map: HashMap<u32, u32>,
+    node_errors: Vec<BTreeError>, // TODO: use NodeError instead
+    error_map: HashMap<u32, u32>,
+}
+
+impl NodeMap {
+    fn new(nr_blocks: u32) -> NodeMap {
+        NodeMap {
+            node_type: FixedBitSet::with_capacity((nr_blocks as usize) * 2),
+            internal_info: Vec::new(),
+            internal_map: HashMap::new(),
+            leaf_info: Vec::new(),
+            leaf_map: HashMap::new(),
+            node_errors: Vec::new(),
+            error_map: HashMap::new(),
+        }
+    }
+
+    fn get_type(&self, blocknr: u32) -> NodeType {
+        // FIXME: query two bits at once
+        let lsb = self.node_type.contains(blocknr as usize * 2);
+        let msb = self.node_type.contains(blocknr as usize * 2 + 1);
+        if !lsb && msb {
+            NodeType::Leaf
+        } else if lsb && !msb {
+            NodeType::Internal
+        } else if lsb && msb {
+            NodeType::Error
+        } else {
+            NodeType::None
+        }
+    }
+
+    fn set_node_type(&mut self, blocknr: u32, t: NodeType) {
+        // FIXME: update two bits at once
+        match t {
+            NodeType::Leaf => {
+                self.node_type.insert(blocknr as usize * 2 + 1);
+            }
+            NodeType::Internal => {
+                self.node_type.insert(blocknr as usize * 2);
+            }
+            NodeType::Error => {
+                self.node_type.insert(blocknr as usize * 2 + 1);
+                self.node_type.insert(blocknr as usize * 2);
+            }
+            _ => {}
+        }
+    }
+
+    fn insert_internal_node(&mut self, blocknr: u32, info: InternalNodeInfo) -> Result<()> {
+        if self.get_type(blocknr) != NodeType::None {
+            return Err(anyhow!("type changed"));
+        }
+        self.internal_map
+            .insert(blocknr, self.internal_info.len() as u32);
+        self.internal_info.push(info);
+        self.set_node_type(blocknr, NodeType::Internal);
+        Ok(())
+    }
+
+    fn insert_error(&mut self, blocknr: u32, e: BTreeError) -> Result<()> {
+        if self.get_type(blocknr) != NodeType::None {
+            return Err(anyhow!("type changed"));
+        }
+        self.error_map
+            .insert(blocknr, self.node_errors.len() as u32);
+        self.node_errors.push(e);
+        self.set_node_type(blocknr, NodeType::Error);
+        Ok(())
+    }
+}
 
 // FIXME: add context to errors
 
-fn verify_checksum(b: &Block) -> Result<()> {
+fn verify_checksum(b: &Block) -> btree::Result<()> {
     let bt = checksum::metadata_block_type(b.get_data());
     if bt != checksum::BT::NODE {
-        return Err(anyhow!("corrupt block: checksum failed"));
+        return Err(BTreeError::NodeError(String::from(
+            "corrupt block: checksum failed",
+        )));
     }
     Ok(())
 }
 
-fn is_seen(
-    loc: u32,
-    metadata_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
-    nodes: &mut NodeMap,
-) -> bool {
+fn is_seen(loc: u32, metadata_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>) -> bool {
     let mut sm = metadata_sm.lock().unwrap();
     let old = sm.inc_one(loc as u64).expect("space map inc failed");
-    old > 0 // nodes.contains_key(&loc)
+    old > 0
 }
 
+// FIXME: split up this function. e.g., return the internal node,
+// and let the caller decide what to do.
 fn read_node_(
     ctx: &Context,
     metadata_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
@@ -142,12 +227,13 @@ fn read_node_(
     ignore_non_fatal: bool,
     is_root: bool,
     nodes: &mut NodeMap,
-) -> Result<NodeInfo> {
+) -> btree::Result<InternalNodeInfo> {
     verify_checksum(&b)?;
 
+    // Allow underfull nodes in the first pass
     // FIXME: use proper path, actually can we recreate the path from the node info?
     let path = Vec::new();
-    let node = unpack_node::<u64>(&path, b.get_data(), ignore_non_fatal, is_root)?;
+    let node = unpack_node::<u64>(&path, b.get_data(), ignore_non_fatal, true)?;
 
     use btree::Node::*;
     if let Internal { keys, values, .. } = node {
@@ -158,7 +244,7 @@ fn read_node_(
         let mut new_values = Vec::with_capacity(values.len());
         let mut new_keys = Vec::with_capacity(child_keys.len());
         for i in 0..values.len() {
-            if !is_seen(values[i] as u32, metadata_sm, nodes) {
+            if !is_seen(values[i] as u32, metadata_sm) {
                 new_values.push(values[i].clone());
                 new_keys.push(child_keys[i].clone());
             }
@@ -167,46 +253,43 @@ fn read_node_(
         let child_keys = new_keys;
 
         if depth == 0 {
-            let mut sm = metadata_sm.lock().unwrap();
-            for (loc, kr) in values.iter().zip(child_keys) {
-                nodes.insert(
-                    *loc as u32,
-                    NodeInfo::Leaf {
-                        keys: kr.clone(),
-                        nr_entries: 0,
-                    },
-                );
+            // FIXME: do this by the caller?
+            for loc in values {
+                nodes.set_node_type(loc as u32, NodeType::Leaf);
             }
         } else {
             // we could error each child rather than the current node
-            let bs = ctx.engine.read_many(&values)?;
-
-            for (i, (b, kr)) in bs.iter().zip(child_keys).enumerate() {
-                if let Ok(b) = b {
-                    read_node(
-                        ctx,
-                        metadata_sm,
-                        &b,
-                        depth - 1,
-                        &kr,
-                        ignore_non_fatal,
-                        false,
-                        nodes,
-                    );
-                } else {
-                    // FIXME: we don't have to store the node content if it is broke
-                    let info = InternalNodeInfo {
-                        keys: kr.clone(),
-                        error: Some(BTreeError::IoError),
-                        children_are_leaves: depth == 0,
-                        children: Vec::new(),
-                        nr_entries: 0,
-                    };
-                    nodes.insert(values[i] as u32, NodeInfo::Internal(info));
+            match ctx.engine.read_many(&values) {
+                Ok(bs) => {
+                    for (i, (b, kr)) in bs.iter().zip(child_keys).enumerate() {
+                        if let Ok(b) = b {
+                            read_node(
+                                ctx,
+                                metadata_sm,
+                                &b,
+                                depth - 1,
+                                &kr,
+                                ignore_non_fatal,
+                                false,
+                                nodes,
+                            );
+                        } else {
+                            nodes.insert_error(values[i] as u32, BTreeError::IoError);
+                        }
+                    }
                 }
-            }
+                Err(_) => {
+                    // error every children
+                    for loc in values {
+                        nodes.insert_error(loc as u32, BTreeError::IoError);
+                    }
+                }
+            };
         }
 
+        // FIXME: is it necessary to return the node info in postfix fashion?
+        //        e.g., gather information from the children or something else
+        // TODO: store all the child keys for further validation
         let info = InternalNodeInfo {
             keys: kr.clone(),
             error: None,
@@ -215,9 +298,11 @@ fn read_node_(
             nr_entries: 0,
         };
 
-        Ok(NodeInfo::Internal(info))
+        Ok(info)
     } else {
-        return Err(anyhow!("btree nodes are not all at the same depth."));
+        return Err(BTreeError::NodeError(String::from(
+            "btree nodes are not all at the same depth.",
+        )));
     }
 }
 
@@ -246,17 +331,10 @@ fn read_node(
         nodes,
     ) {
         Err(e) => {
-            let info = InternalNodeInfo {
-                keys: keys.clone(),
-                error: Some(BTreeError::IoError), // FIXME: gather the error from the children
-                children_are_leaves: depth == 0,
-                children: Vec::new(),
-                nr_entries: 0,
-            };
-            nodes.insert(block_nr, NodeInfo::Internal(info));
+            nodes.insert_error(block_nr, e);
         }
         Ok(n) => {
-            nodes.insert(block_nr, n);
+            nodes.insert_internal_node(block_nr, n);
         }
     }
 }
@@ -288,7 +366,7 @@ fn read_internal_nodes(
     nodes: &mut NodeMap,
 ) {
     let keys = KeyRange::new();
-    if is_seen(root, metadata_sm, nodes) {
+    if is_seen(root, metadata_sm) {
         return;
     }
 
@@ -297,13 +375,7 @@ fn read_internal_nodes(
     let depth = get_depth(ctx, &mut path, root as u64, true).expect("get_depth failed");
 
     if depth == 0 {
-        nodes.insert(
-            root as u32,
-            NodeInfo::Leaf {
-                keys: KeyRange::new(),
-                nr_entries: 0,
-            },
-        );
+        nodes.set_node_type(root as u32, NodeType::Leaf);
         return;
     }
 
@@ -319,28 +391,13 @@ fn read_internal_nodes(
             nodes,
         );
     } else {
-        let info = InternalNodeInfo {
-            keys: keys.clone(),
-            error: Some(BTreeError::IoError),
-            children_are_leaves: depth == 0,
-            children: Vec::new(),
-            nr_entries: 0,
-        };
         // FIXME: factor out common code
-        nodes.insert(root, NodeInfo::Internal(info));
+        nodes.insert_error(root, BTreeError::IoError);
     }
 }
 
-// FIXME: we cannot do this if info is a borrow from nodes
-fn visit_children(info: &mut InternalNodeInfo, nodes: &mut NodeMap) -> u64 {
-    for b in info.children.iter() {
-        info.nr_entries += visit_node(*b, nodes);
-    }
-    info.nr_entries
-}
-
-fn visit_node(b: u32, nodes: &mut NodeMap) -> u64 {
-    let nr_entries = match nodes.get(&b).cloned() {
+/*fn visit_node(b: u32, nodes: &mut NodeMap) -> u64 {
+    let nr_entries = match nodes.get_type(&b) {
         Some(NodeInfo::Internal(info)) => {
             if info.nr_entries > 0 {
                 info.nr_entries
@@ -362,7 +419,7 @@ fn visit_node(b: u32, nodes: &mut NodeMap) -> u64 {
     }
 
     nr_entries
-}
+}*/
 
 // Check the mappings filling in the data_sm as we go.
 fn check_mapping_bottom_level(
@@ -375,19 +432,20 @@ fn check_mapping_bottom_level(
 ) -> Result<()> {
     ctx.report.set_sub_title("mapping tree");
 
-    let mut nodes = BTreeMap::new();
+    let mut nodes = NodeMap::new(ctx.engine.get_nr_blocks() as u32);
+
     let mut tree_roots = BTreeSet::new();
 
     let start = std::time::Instant::now();
-    let mut last = 0;
     for (thin_id, (_path, root)) in roots {
         tree_roots.insert(*root);
         read_internal_nodes(ctx, metadata_sm, *root as u32, ignore_non_fatal, &mut nodes);
-        last = nodes.len();
     }
     let duration = start.elapsed();
     eprintln!("read_internal_nodes: {:?}", duration);
-
+    eprintln!("nr internal nodes: {}", nodes.internal_info.len());
+    eprintln!("nr errors: {}", nodes.node_errors.len());
+/*
     // Build a vec of the leaf locations.  These will be in disk location
     // order.
     // FIXME: use with_capacity
@@ -405,6 +463,8 @@ fn check_mapping_bottom_level(
     }
     let duration = start.elapsed();
     eprintln!("collecting leaf nodes blocknr: {:?}", duration);
+
+    return Ok(());
 
     let start = std::time::Instant::now();
     //std::thread::sleep(std::time::Duration::from_secs(30));
@@ -491,13 +551,13 @@ fn check_mapping_bottom_level(
             Some(NodeInfo::Internal(info)) => {
                 if info.nr_entries != details.mapped_blocks {
                     eprintln!("Thin device {} has unexpected number of mapped block, expected {}, actual {}", thin_id,
-                        details.mapped_blocks, info.nr_entries);
+                            details.mapped_blocks, info.nr_entries);
                 }
             }
             Some(NodeInfo::Leaf { nr_entries, .. }) => {
                 if *nr_entries != details.mapped_blocks {
                     eprintln!("Thin device {} has unexpected number of mapped block, expected {}, actual {}", thin_id,
-                        details.mapped_blocks, nr_entries);
+                            details.mapped_blocks, nr_entries);
                 }
             }
             _ => {
@@ -507,7 +567,7 @@ fn check_mapping_bottom_level(
     }
     let duration = start.elapsed();
     eprintln!("checking mapped blocks: {:?}", duration);
-
+*/
     /*if failed {
         Err(anyhow!("Check of mappings failed"))
     } else {
@@ -551,7 +611,10 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
         "size of InternalNodeInfo: {:?}",
         std::mem::size_of::<InternalNodeInfo>()
     );
-    eprintln!("size of NodeInfo: {:?}", std::mem::size_of::<NodeInfo>());
+    eprintln!(
+        "size of LeafNodeInfo: {:?}",
+        std::mem::size_of::<LeafNodeInfo>()
+    );
 
     let ctx = mk_context(&opts)?;
 
@@ -625,7 +688,7 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
 
     // mapping bottom level
     let root = unpack::<SMRoot>(&sb.data_sm_root[0..])?;
-    let data_sm = core_sm(root.nr_blocks, nr_devs as u32);
+    let data_sm = core_sm(root.nr_blocks, nr_devs as u32); // consumes a lot of mem
     check_mapping_bottom_level(
         &ctx,
         &metadata_sm,
@@ -634,6 +697,8 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
         opts.ignore_non_fatal,
         &devs,
     )?;
+
+    return Ok(());
 
     // trees in metadata snap
     if sb.metadata_snap > 0 {
