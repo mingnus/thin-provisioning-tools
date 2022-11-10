@@ -120,6 +120,7 @@ enum NodeType {
     Error,
 }
 
+#[derive(Debug)]
 struct NodeMap {
     node_type: FixedBitSet,
     leaf_nodes: FixedBitSet,
@@ -411,30 +412,38 @@ fn read_internal_nodes(
     }
 }
 
-/*fn visit_node(b: u32, nodes: &mut NodeMap) -> u64 {
-    let nr_entries = match nodes.get_type(&b) {
-        Some(NodeInfo::Internal(info)) => {
-            if info.nr_entries > 0 {
-                info.nr_entries
-            } else {
-                let mut nr_entries = 0;
-                for b in info.children.iter() {
-                    nr_entries += visit_node(*b, nodes);
+fn visit_node(b: u32, nodes: &mut NodeMap) -> u64 {
+    match nodes.get_type(b) {
+        NodeType::Internal => {
+            if let Some(i) = nodes.internal_map.get(&b).cloned() {
+                let info = &nodes.internal_info[i as usize];
+                // FIXME: use another flag to indicate that the node had been visited
+                if info.nr_entries > 0 {
+                    info.nr_entries
+                } else {
+                    let children = info.children.clone();
+                    let mut nr_entries = 0;
+                    for b in children {
+                        nr_entries += visit_node(b, nodes);
+                    }
+
+                    nodes.internal_info[i as usize].nr_entries = nr_entries;
+                    nr_entries
                 }
-                nr_entries
+            } else {
+                0
             }
         }
-        Some(NodeInfo::Leaf { nr_entries, .. }) => nr_entries,
+        NodeType::Leaf => {
+            if let Some(i) = nodes.leaf_map.get(&b).cloned() {
+                nodes.leaf_info[i as usize].nr_entries
+            } else {
+                0
+            }
+        }
         _ => 0,
-    };
-
-    // FIXME: avoid separated query & update
-    if let Some(NodeInfo::Internal(info)) = nodes.get_mut(&b) {
-        info.nr_entries = nr_entries;
     }
-
-    nr_entries
-}*/
+}
 
 // Check the mappings filling in the data_sm as we go.
 fn check_mapping_bottom_level(
@@ -540,7 +549,7 @@ fn check_mapping_bottom_level(
     ctx.pool.join();
     let duration = start.elapsed();
     eprintln!("reading leaf nodes: {:?}", duration);
-/*
+
     let start = std::time::Instant::now();
     // stage2: DFS traverse subtree to gather subtree information (single threaded)
     let mut nodes = Arc::try_unwrap(nodes).unwrap().into_inner().unwrap();
@@ -553,27 +562,33 @@ fn check_mapping_bottom_level(
 
     let start = std::time::Instant::now();
     for ((thin_id, (_, root)), details) in roots.into_iter().zip(devs.values()) {
-        match nodes.get(&(*root as u32)) {
-            Some(NodeInfo::Internal(info)) => {
-                if info.nr_entries != details.mapped_blocks {
-                    eprintln!("Thin device {} has unexpected number of mapped block, expected {}, actual {}", thin_id,
-                            details.mapped_blocks, info.nr_entries);
+        // TODO: move into get_nr_mappings() or get_summary()
+        let mapped = match nodes.get_type(*root as u32) {
+            NodeType::Internal => {
+                if let Some(i) = nodes.internal_map.get(&(*root as u32)) {
+                    nodes.internal_info[*i as usize].nr_entries
+                } else {
+                    0
                 }
-            }
-            Some(NodeInfo::Leaf { nr_entries, .. }) => {
-                if *nr_entries != details.mapped_blocks {
-                    eprintln!("Thin device {} has unexpected number of mapped block, expected {}, actual {}", thin_id,
-                            details.mapped_blocks, nr_entries);
+            },
+            NodeType::Leaf => {
+                if let Some(i) = nodes.leaf_map.get(&(*root as u32)) {
+                    nodes.leaf_info[*i as usize].nr_entries
+                } else {
+                    0
                 }
-            }
-            _ => {
-                eprintln!("error");
-            }
+            },
+            _ => 0,
+        };
+
+        if mapped != details.mapped_blocks {
+            eprintln!("Thin device {} has unexpected number of mapped block, expected {}, actual {}", thin_id,
+                    details.mapped_blocks, mapped);
         }
     }
     let duration = start.elapsed();
     eprintln!("checking mapped blocks: {:?}", duration);
-*/
+
     /*if failed {
         Err(anyhow!("Check of mappings failed"))
     } else {
@@ -703,8 +718,6 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
         opts.ignore_non_fatal,
         &devs,
     )?;
-
-    return Ok(());
 
     // trees in metadata snap
     if sb.metadata_snap > 0 {
