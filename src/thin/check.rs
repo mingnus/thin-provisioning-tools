@@ -108,7 +108,8 @@ struct InternalNodeInfo {
 
 #[derive(Debug, Clone)]
 struct LeafNodeInfo {
-    keys: KeyRange,
+    key_low: u64, // min mapped block
+    key_high: u64, // max mapped block, inclusive
     nr_entries: u64,
 }
 
@@ -525,10 +526,13 @@ fn check_mapping_bottom_level(
                             let mut nodes = nodes.lock().unwrap();
                             match nodes.get_type(*loc as u32) {
                                 NodeType::Leaf => {
-                                    // FIXME: copy the min & max key instead
+                                    let nr_entries = keys.len();
+                                    let key_low = if nr_entries > 0 {keys[0]} else {0};
+                                    let key_high = if nr_entries > 0 {keys[nr_entries - 1]} else {0};
                                     let info = LeafNodeInfo {
-                                        keys: KeyRange {start: keys.first().cloned(), end: keys.last().cloned()},
-                                        nr_entries: keys.len() as u64,
+                                        key_low,
+                                        key_high,
+                                        nr_entries: nr_entries as u64,
                                     };
                                     nodes.update_leaf_node(*loc as u32, info);
                                 }
