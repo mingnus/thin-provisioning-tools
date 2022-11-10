@@ -242,7 +242,6 @@ fn read_node_(
     depth: usize,
     kr: &KeyRange,
     ignore_non_fatal: bool,
-    is_root: bool,
     nodes: &mut NodeMap,
 ) -> btree::Result<InternalNodeInfo> {
     verify_checksum(&b)?;
@@ -287,7 +286,6 @@ fn read_node_(
                                 depth - 1,
                                 &kr,
                                 ignore_non_fatal,
-                                false,
                                 nodes,
                             );
                         } else {
@@ -310,7 +308,6 @@ fn read_node_(
         // TODO: store all the child keys for further validation
         let info = InternalNodeInfo {
             keys: kr.clone(),
-            error: None,
             children_are_leaves: depth == 0,
             children,
             nr_entries: 0,
@@ -334,7 +331,6 @@ fn read_node(
     depth: usize,
     keys: &KeyRange,
     ignore_non_fatal: bool,
-    is_root: bool,
     nodes: &mut NodeMap,
 ) {
     let block_nr = b.loc as u32;
@@ -345,7 +341,6 @@ fn read_node(
         depth,
         keys,
         ignore_non_fatal,
-        is_root,
         nodes,
     ) {
         Err(e) => {
@@ -405,7 +400,6 @@ fn read_internal_nodes(
             depth - 1,
             &keys,
             ignore_non_fatal,
-            true,
             nodes,
         );
     } else {
@@ -414,6 +408,7 @@ fn read_internal_nodes(
     }
 }
 
+// TODO: check underfull, check the key range
 fn visit_node(b: u32, nodes: &mut NodeMap) -> u64 {
     match nodes.get_type(b) {
         NodeType::Internal => {
@@ -507,11 +502,11 @@ fn check_mapping_bottom_level(
             for (loc, b) in c.iter().zip(blocks) {
                 let b = b.expect("lazy");
                 verify_checksum(&b).expect("lazy programmer");
-                let is_root = tree_roots.contains(loc);
 
+                // allow underfull nodes at this stage
                 let mut path = Vec::new();
                 let node =
-                    unpack_node::<BlockTime>(&mut path, b.get_data(), ignore_non_fatal, is_root)
+                    unpack_node::<BlockTime>(&mut path, b.get_data(), ignore_non_fatal, true)
                         .expect("lazy");
                 match node {
                     Node::Leaf { keys, values, .. } => {
