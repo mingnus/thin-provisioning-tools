@@ -99,8 +99,6 @@ struct Context {
 struct InternalNodeInfo {
     keys: KeyRange,
 
-    // Errors found in _this_ node only; children may have errors
-    error: Option<btree::BTreeError>,
     children_are_leaves: bool,
     children: Vec<u32>,
     nr_entries: u64,
@@ -130,6 +128,8 @@ struct NodeMap {
     internal_map: HashMap<u32, u32>,
     leaf_info: Vec<LeafNodeInfo>,
     leaf_map: HashMap<u32, u32>,
+
+    // Stores errors found in _this_ node only; children errors not included
     node_errors: Vec<BTreeError>, // TODO: use NodeError instead
     error_map: HashMap<u32, u32>,
 }
@@ -296,7 +296,7 @@ fn read_node_(
                     }
                 }
                 Err(_) => {
-                    // error every children
+                    // error every block
                     for loc in values {
                         nodes.insert_error(loc as u32, BTreeError::IoError);
                     }
@@ -304,8 +304,9 @@ fn read_node_(
             };
         }
 
-        // FIXME: is it necessary to return the node info in postfix fashion?
-        //        e.g., gather information from the children or something else
+        // FIXME: Is it necessary to return the node info in postfix fashion?
+        //        The leaves are not visited yet so we're not able to gather
+        //        information from the children at this moment.
         // TODO: store all the child keys for further validation
         let info = InternalNodeInfo {
             keys: kr.clone(),
