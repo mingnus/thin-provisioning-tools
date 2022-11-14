@@ -561,7 +561,10 @@ fn check_mapping_bottom_level(
     eprintln!("counting mapped blocks: {:?}", duration);
 
     let start = std::time::Instant::now();
+    println!("{}", roots.len());
+    println!("{}", devs.len());
     for ((thin_id, (_, root)), details) in roots.into_iter().zip(devs.values()) {
+        //eprintln!("dev {} root {} details {:?}", thin_id, root, details.mapped_blocks);
         // TODO: move into get_nr_mappings() or get_summary()
         let mapped = match nodes.get_type(*root as u32) {
             NodeType::Internal => {
@@ -744,7 +747,7 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
             opts.ignore_non_fatal,
             sb_snap.mapping_root,
         )?;
-
+        eprintln!("roots_snap {:?}", roots_snap);
         // mapping bottom level
         check_mapping_bottom_level(
             &ctx,
