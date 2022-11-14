@@ -97,10 +97,14 @@ struct Context {
 // TODO: store the keys
 #[derive(Debug, Clone)]
 struct InternalNodeInfo {
-    keys: KeyRange,
-
+    keys: Vec<u64>,
     children_are_leaves: bool,
     children: Vec<u32>,
+
+    // aggregated attributes from its children
+    // FIXME: these could be moved to other structs
+    key_low: u64,
+    key_high: u64,
     nr_entries: u64,
 }
 
@@ -109,6 +113,32 @@ struct LeafNodeInfo {
     key_low: u64, // min mapped block
     key_high: u64, // max mapped block, inclusive
     nr_entries: u64,
+}
+
+// TODO: replace LeafNodeInfo by this one
+#[derive(Debug, Clone, Default)]
+struct NodeSummary {
+    key_low: u64, // min mapped block
+    key_high: u64, // max mapped block, inclusive
+    nr_entries: u64,
+}
+
+impl NodeSummary {
+    fn append(&mut self, other: &NodeSummary) -> anyhow::Result<()> {
+        if other.nr_entries > 0 {
+            if self.nr_entries == 0 {
+                *self = other.clone();
+            } else {
+                if other.key_low <= self.key_high {
+                    return Err(anyhow!("overlapped keys"));
+                }
+                self.key_high = other.key_high;
+                self.nr_entries += other.nr_entries;
+            }
+        }
+
+        Ok(())
+    }
 }
 
 #[derive(PartialEq)]
@@ -303,13 +333,18 @@ fn read_node_(
         }
 
         // FIXME: Is it necessary to return the node info in postfix fashion?
-        //        The leaves are not visited yet so we're not able to gather
-        //        information from the children at this moment.
+        //        Returning nodes in postfix ordering doesn't help gathering
+        //        information from the children since we haven't visit the
+        //        leaves yet. However, it could help the caller to check
+        //        whether the internal node is good or not, e.g., there's any
+        //        error in unpack_node or split_key_range
         // TODO: store all the child keys for further validation
         let info = InternalNodeInfo {
-            keys: kr.clone(),
+            keys: keys.clone(),
             children_are_leaves: depth == 0,
             children,
+            key_low: 0,
+            key_high: 0,
             nr_entries: 0,
         };
 
@@ -409,36 +444,80 @@ fn read_internal_nodes(
 }
 
 // TODO: check underfull, check the key range
-fn visit_node(b: u32, nodes: &mut NodeMap) -> u64 {
+fn visit_node(path: &mut Vec<u64>, kr: &KeyRange, b: u32, nodes: &mut NodeMap) -> NodeSummary {
     match nodes.get_type(b) {
         NodeType::Internal => {
             if let Some(i) = nodes.internal_map.get(&b).cloned() {
                 let info = &nodes.internal_info[i as usize];
                 // FIXME: use another flag to indicate that the node had been visited
+                // nr_entries is unreliable. A broken leaf, or an internal node with
+                // all invalid leaves will have zero mapped entries in its summary.
                 if info.nr_entries > 0 {
-                    info.nr_entries
-                } else {
-                    let children = info.children.clone();
-                    let mut nr_entries = 0;
-                    for b in children {
-                        nr_entries += visit_node(b, nodes);
+                    // check parent keys
+                    if let Some(n) = kr.start {
+                        // the parent key could be less than or equal to,
+                        // but not greater than the child's first key
+                        if n > info.key_low {
+                            return NodeSummary::default();
+                        }
+                    }
+                    if let Some(n) = kr.end {
+                        // note that KeyRange is a right-opened interval
+                        if n < info.key_high {
+                            return NodeSummary::default();
+                        }
                     }
 
-                    nodes.internal_info[i as usize].nr_entries = nr_entries;
-                    nr_entries
+                    NodeSummary {
+                        key_low: info.key_low,
+                        key_high: info.key_high,
+                        nr_entries: info.nr_entries,
+                    }
+                } else {
+                    // gather information from the children
+                    let children = info.children.clone(); // FIXME: avoid clone
+                    let child_keys = split_key_ranges(path, kr, &info.keys).unwrap();
+
+                    let mut summary = NodeSummary::default();
+                    for (i, b) in children.into_iter().enumerate() {
+                        path.push(b as u64);
+                        let child_info = visit_node(path, &child_keys[i], b, nodes);
+                        summary.append(&child_info);
+                        path.pop();
+                    }
+
+                    // TODO: check parent keys
+
+                    // update summary for the current node
+                    let info = &mut nodes.internal_info[i as usize];
+                    info.key_low = summary.key_low;
+                    info.key_high = summary.key_high;
+                    info.nr_entries = summary.nr_entries;
+
+                    summary
                 }
             } else {
-                0
+                // missing info
+                NodeSummary::default()
             }
         }
         NodeType::Leaf => {
             if let Some(i) = nodes.leaf_map.get(&b).cloned() {
-                nodes.leaf_info[i as usize].nr_entries
+                let info = &mut nodes.leaf_info[i as usize];
+
+                // TODO: check parent keys
+
+                NodeSummary {
+                    key_low: info.key_low,
+                    key_high: info.key_high,
+                    nr_entries: info.nr_entries,
+                }
             } else {
-                0
+                // missing info
+                NodeSummary::default()
             }
         }
-        _ => 0,
+        _ => NodeSummary::default(),
     }
 }
 
@@ -555,7 +634,9 @@ fn check_mapping_bottom_level(
     let mut nodes = Arc::try_unwrap(nodes).unwrap().into_inner().unwrap();
     let tree_roots = Arc::try_unwrap(tree_roots).unwrap();
     for root in tree_roots.iter() {
-        visit_node(*root as u32, &mut nodes);
+        let mut path = vec![0, *root]; // FIXME: use actual path from the top-level tree
+        let kr = KeyRange::new();
+        visit_node(&mut path, &kr, *root as u32, &mut nodes);
     }
     let duration = start.elapsed();
     eprintln!("counting mapped blocks: {:?}", duration);
