@@ -194,7 +194,6 @@ impl NodeMap {
         }
     }
 
-
     fn insert_internal_node(&mut self, blocknr: u32, info: InternalNodeInfo) -> Result<()> {
         if self.get_type(blocknr) != NodeType::None {
             return Err(anyhow!("type changed"));
@@ -216,6 +215,11 @@ impl NodeMap {
         self.set_node_type(blocknr, NodeType::Error);
         Ok(())
     }
+
+    // returns total number of registered nodes
+    fn len(&self) -> u32 {
+        return self.internal_info.len() as u32 + self.nr_leaves + self.node_errors.len() as u32
+    }
 }
 
 #[derive(Debug)]
@@ -225,10 +229,10 @@ struct SummaryMap {
 }
 
 impl SummaryMap {
-    fn new() -> Self {
+    fn new(capacity: u32) -> Self {
         Self {
-            summaries: Vec::new(),
-            node_map: HashMap::new(),
+            summaries: Vec::with_capacity(capacity as usize),
+            node_map: HashMap::with_capacity(capacity as usize),
         }
     }
 
@@ -527,7 +531,7 @@ fn check_mapping_bottom_level(
     // Process chunks of leaves at once so the io engine can aggregate reads.
     let leaves = Arc::new(leaves);
     let nodes = Arc::new(nodes);
-    let summaries = Arc::new(Mutex::new(SummaryMap::new()));
+    let summaries = Arc::new(Mutex::new(SummaryMap::new(nodes.len())));
     let mut chunk_start = 0;
     let tree_roots = Arc::new(tree_roots);
     while chunk_start < leaves.len() {
