@@ -98,8 +98,8 @@ struct Context {
 #[derive(Debug, Clone)]
 struct InternalNodeInfo {
     keys: Vec<u64>,
-    children_are_leaves: bool,
     children: Vec<u32>,
+    children_are_leaves: bool,
 
     // aggregated attributes from its children
     // FIXME: these could be moved to other structs
@@ -270,7 +270,6 @@ fn read_node_(
     metadata_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
     b: &Block,
     depth: usize,
-    kr: &KeyRange,
     ignore_non_fatal: bool,
     nodes: &mut NodeMap,
 ) -> btree::Result<InternalNodeInfo> {
@@ -284,19 +283,15 @@ fn read_node_(
     use btree::Node::*;
     if let Internal { keys, values, .. } = node {
         let children = values.iter().map(|v| *v as u32).collect::<Vec<u32>>(); // FIXME: slow
-        let child_keys = split_key_ranges(&path, kr, &keys)?;
 
         // filter out previously visited nodes
         let mut new_values = Vec::with_capacity(values.len());
-        let mut new_keys = Vec::with_capacity(child_keys.len());
         for i in 0..values.len() {
             if !is_seen(values[i] as u32, metadata_sm) {
                 new_values.push(values[i].clone());
-                new_keys.push(child_keys[i].clone());
             }
         }
         let values = new_values;
-        let child_keys = new_keys;
 
         if depth == 0 {
             // FIXME: do this by the caller?
@@ -307,14 +302,13 @@ fn read_node_(
             // we could error each child rather than the current node
             match ctx.engine.read_many(&values) {
                 Ok(bs) => {
-                    for (i, (b, kr)) in bs.iter().zip(child_keys).enumerate() {
+                    for (i, b) in bs.iter().enumerate() {
                         if let Ok(b) = b {
                             read_node(
                                 ctx,
                                 metadata_sm,
                                 &b,
                                 depth - 1,
-                                &kr,
                                 ignore_non_fatal,
                                 nodes,
                             );
@@ -338,7 +332,6 @@ fn read_node_(
         //        leaves yet. However, it could help the caller to check
         //        whether the internal node is good or not, e.g., there's any
         //        error in unpack_node or split_key_range
-        // TODO: store all the child keys for further validation
         let info = InternalNodeInfo {
             keys: keys.clone(),
             children_are_leaves: depth == 0,
@@ -364,7 +357,6 @@ fn read_node(
     metadata_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
     b: &Block,
     depth: usize,
-    keys: &KeyRange,
     ignore_non_fatal: bool,
     nodes: &mut NodeMap,
 ) {
@@ -374,7 +366,6 @@ fn read_node(
         metadata_sm,
         b,
         depth,
-        keys,
         ignore_non_fatal,
         nodes,
     ) {
@@ -413,7 +404,6 @@ fn read_internal_nodes(
     ignore_non_fatal: bool,
     nodes: &mut NodeMap,
 ) {
-    let keys = KeyRange::new();
     if is_seen(root, metadata_sm) {
         return;
     }
@@ -433,7 +423,6 @@ fn read_internal_nodes(
             metadata_sm,
             &b,
             depth - 1,
-            &keys,
             ignore_non_fatal,
             nodes,
         );
