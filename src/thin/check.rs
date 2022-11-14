@@ -94,28 +94,13 @@ struct Context {
 // We know the metadata area is limited to 16G, so u32 is large enough
 // hold block numbers.
 
-// TODO: store the keys
 #[derive(Debug, Clone)]
 struct InternalNodeInfo {
     keys: Vec<u64>,
     children: Vec<u32>,
     children_are_leaves: bool,
-
-    // aggregated attributes from its children
-    // FIXME: these could be moved to other structs
-    key_low: u64,
-    key_high: u64,
-    nr_entries: u64,
 }
 
-#[derive(Debug, Clone)]
-struct LeafNodeInfo {
-    key_low: u64, // min mapped block
-    key_high: u64, // max mapped block, inclusive
-    nr_entries: u64,
-}
-
-// TODO: replace LeafNodeInfo by this one
 #[derive(Debug, Clone, Default)]
 struct NodeSummary {
     key_low: u64, // min mapped block
@@ -156,8 +141,6 @@ struct NodeMap {
     nr_leaves: u32,
     internal_info: Vec<InternalNodeInfo>,
     internal_map: HashMap<u32, u32>,
-    leaf_info: Vec<LeafNodeInfo>,
-    leaf_map: HashMap<u32, u32>,
 
     // Stores errors found in _this_ node only; children errors not included
     node_errors: Vec<BTreeError>, // TODO: use NodeError instead
@@ -172,8 +155,6 @@ impl NodeMap {
             nr_leaves: 0,
             internal_info: Vec::new(),
             internal_map: HashMap::new(),
-            leaf_info: Vec::new(),
-            leaf_map: HashMap::new(),
             node_errors: Vec::new(),
             error_map: HashMap::new(),
         }
@@ -213,14 +194,6 @@ impl NodeMap {
         }
     }
 
-    fn update_leaf_node(&mut self, blocknr: u32, info: LeafNodeInfo) -> Result<()> {
-        if self.get_type(blocknr) != NodeType::Leaf {
-            return Err(anyhow!("type changed"));
-        }
-        self.leaf_map.insert(blocknr, self.leaf_info.len() as u32);
-        self.leaf_info.push(info);
-        Ok(())
-    }
 
     fn insert_internal_node(&mut self, blocknr: u32, info: InternalNodeInfo) -> Result<()> {
         if self.get_type(blocknr) != NodeType::None {
@@ -242,6 +215,38 @@ impl NodeMap {
         self.node_errors.push(e);
         self.set_node_type(blocknr, NodeType::Error);
         Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct SummaryMap {
+    summaries: Vec<NodeSummary>,
+    node_map: HashMap<u32, u32>,
+}
+
+impl SummaryMap {
+    fn new() -> Self {
+        Self {
+            summaries: Vec::new(),
+            node_map: HashMap::new(),
+        }
+    }
+
+    fn push(&mut self, blocknr: u32, summary: NodeSummary) -> Result<()> {
+        if self.node_map.contains_key(&blocknr) {
+            return Err(anyhow!("already summarized"));
+        }
+        self.node_map.insert(blocknr, self.summaries.len() as u32);
+        self.summaries.push(summary);
+        Ok(())
+    }
+
+    fn get(&self, blocknr: u32) -> Option<&NodeSummary> {
+        if let Some(i) = self.node_map.get(&blocknr) {
+            Some(&self.summaries[*i as usize])
+        } else {
+            None
+        }
     }
 }
 
@@ -336,9 +341,6 @@ fn read_node_(
             keys: keys.clone(),
             children_are_leaves: depth == 0,
             children,
-            key_low: 0,
-            key_high: 0,
-            nr_entries: 0,
         };
 
         Ok(info)
@@ -432,81 +434,55 @@ fn read_internal_nodes(
     }
 }
 
-// TODO: check underfull, check the key range
-fn visit_node(path: &mut Vec<u64>, kr: &KeyRange, b: u32, nodes: &mut NodeMap) -> NodeSummary {
+// TODO: check underfull?
+fn visit_node(path: &mut Vec<u64>, kr: &KeyRange, b: u32, nodes: &NodeMap, summaries: &mut SummaryMap) -> NodeSummary {
+    if let Some(sum) = summaries.get(b) {
+        if sum.nr_entries > 0 {
+            if let Some(n) = kr.start {
+                // the parent key could be less than or equal to,
+                // but not greater than the child's first key
+                if n > sum.key_low {
+                    return NodeSummary::default();
+                }
+            }
+            if let Some(n) = kr.end {
+                // note that KeyRange is a right-opened interval
+                if n < sum.key_high {
+                    return NodeSummary::default();
+                }
+            }
+        }
+
+        return sum.clone();
+    }
+
     match nodes.get_type(b) {
         NodeType::Internal => {
             if let Some(i) = nodes.internal_map.get(&b).cloned() {
                 let info = &nodes.internal_info[i as usize];
-                // FIXME: use another flag to indicate that the node had been visited
-                // nr_entries is unreliable. A broken leaf, or an internal node with
-                // all invalid leaves will have zero mapped entries in its summary.
-                if info.nr_entries > 0 {
-                    // check parent keys
-                    if let Some(n) = kr.start {
-                        // the parent key could be less than or equal to,
-                        // but not greater than the child's first key
-                        if n > info.key_low {
-                            return NodeSummary::default();
-                        }
-                    }
-                    if let Some(n) = kr.end {
-                        // note that KeyRange is a right-opened interval
-                        if n < info.key_high {
-                            return NodeSummary::default();
-                        }
-                    }
 
-                    NodeSummary {
-                        key_low: info.key_low,
-                        key_high: info.key_high,
-                        nr_entries: info.nr_entries,
-                    }
-                } else {
-                    // gather information from the children
-                    let children = info.children.clone(); // FIXME: avoid clone
-                    let child_keys = split_key_ranges(path, kr, &info.keys).unwrap();
+                // gather information from the children
+                let child_keys = split_key_ranges(path, kr, &info.keys).unwrap();
 
-                    let mut summary = NodeSummary::default();
-                    for (i, b) in children.into_iter().enumerate() {
-                        path.push(b as u64);
-                        let child_info = visit_node(path, &child_keys[i], b, nodes);
-                        summary.append(&child_info);
-                        path.pop();
-                    }
-
-                    // TODO: check parent keys
-
-                    // update summary for the current node
-                    let info = &mut nodes.internal_info[i as usize];
-                    info.key_low = summary.key_low;
-                    info.key_high = summary.key_high;
-                    info.nr_entries = summary.nr_entries;
-
-                    summary
+                let mut sum = NodeSummary::default();
+                for (i, b) in info.children.iter().enumerate() {
+                    path.push(*b as u64);
+                    let child_info = visit_node(path, &child_keys[i], *b, nodes, summaries);
+                    sum.append(&child_info);
+                    path.pop();
                 }
+
+                summaries.push(b, sum.clone());
+
+                sum
             } else {
                 // missing info
                 NodeSummary::default()
             }
         }
-        NodeType::Leaf => {
-            if let Some(i) = nodes.leaf_map.get(&b).cloned() {
-                let info = &mut nodes.leaf_info[i as usize];
-
-                // TODO: check parent keys
-
-                NodeSummary {
-                    key_low: info.key_low,
-                    key_high: info.key_high,
-                    nr_entries: info.nr_entries,
-                }
-            } else {
-                // missing info
-                NodeSummary::default()
-            }
+        _ => {
+            NodeSummary::default()
         }
-        _ => NodeSummary::default(),
     }
 }
 
@@ -550,7 +526,8 @@ fn check_mapping_bottom_level(
     //std::thread::sleep(std::time::Duration::from_secs(30));
     // Process chunks of leaves at once so the io engine can aggregate reads.
     let leaves = Arc::new(leaves);
-    let nodes = Arc::new(Mutex::new(nodes));
+    let nodes = Arc::new(nodes);
+    let summaries = Arc::new(Mutex::new(SummaryMap::new()));
     let mut chunk_start = 0;
     let tree_roots = Arc::new(tree_roots);
     while chunk_start < leaves.len() {
@@ -560,6 +537,7 @@ fn check_mapping_bottom_level(
         let leaves = leaves.clone();
         let tree_roots = tree_roots.clone();
         let nodes = nodes.clone();
+        let summaries = summaries.clone();
 
         ctx.pool.execute(move || {
             let c = &leaves[chunk_start..(chunk_start + len)];
@@ -578,7 +556,6 @@ fn check_mapping_bottom_level(
                         .expect("lazy");
                 match node {
                     Node::Leaf { keys, values, .. } => {
-                        // FIXME: check keys are within range
                         {
                             let mut data_sm = data_sm.lock().unwrap();
                             for v in values {
@@ -587,18 +564,18 @@ fn check_mapping_bottom_level(
                         }
 
                         {
-                            let mut nodes = nodes.lock().unwrap();
                             match nodes.get_type(*loc as u32) {
                                 NodeType::Leaf => {
                                     let nr_entries = keys.len();
                                     let key_low = if nr_entries > 0 {keys[0]} else {0};
                                     let key_high = if nr_entries > 0 {keys[nr_entries - 1]} else {0};
-                                    let info = LeafNodeInfo {
+                                    let sum = NodeSummary {
                                         key_low,
                                         key_high,
                                         nr_entries: nr_entries as u64,
                                     };
-                                    nodes.update_leaf_node(*loc as u32, info);
+                                    let mut sums = summaries.lock().unwrap();
+                                    sums.push(*loc as u32, sum);
                                 }
                                 _ => {
                                     panic!("unexpected node type");
@@ -620,12 +597,13 @@ fn check_mapping_bottom_level(
 
     let start = std::time::Instant::now();
     // stage2: DFS traverse subtree to gather subtree information (single threaded)
-    let mut nodes = Arc::try_unwrap(nodes).unwrap().into_inner().unwrap();
+    let nodes = Arc::try_unwrap(nodes).unwrap();
+    let mut summaries = Arc::try_unwrap(summaries).unwrap().into_inner().unwrap();
     let tree_roots = Arc::try_unwrap(tree_roots).unwrap();
     for root in tree_roots.iter() {
         let mut path = vec![0, *root]; // FIXME: use actual path from the top-level tree
         let kr = KeyRange::new();
-        visit_node(&mut path, &kr, *root as u32, &mut nodes);
+        visit_node(&mut path, &kr, *root as u32, &nodes, &mut summaries);
     }
     let duration = start.elapsed();
     eprintln!("counting mapped blocks: {:?}", duration);
@@ -635,23 +613,10 @@ fn check_mapping_bottom_level(
     println!("{}", devs.len());
     for ((thin_id, (_, root)), details) in roots.into_iter().zip(devs.values()) {
         //eprintln!("dev {} root {} details {:?}", thin_id, root, details.mapped_blocks);
-        // TODO: move into get_nr_mappings() or get_summary()
-        let mapped = match nodes.get_type(*root as u32) {
-            NodeType::Internal => {
-                if let Some(i) = nodes.internal_map.get(&(*root as u32)) {
-                    nodes.internal_info[*i as usize].nr_entries
-                } else {
-                    0
-                }
-            },
-            NodeType::Leaf => {
-                if let Some(i) = nodes.leaf_map.get(&(*root as u32)) {
-                    nodes.leaf_info[*i as usize].nr_entries
-                } else {
-                    0
-                }
-            },
-            _ => 0,
+        let mapped = if let Some(sum) = summaries.get(*root as u32) {
+            sum.nr_entries
+        } else {
+            0
         };
 
         if mapped != details.mapped_blocks {
@@ -706,8 +671,8 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
         std::mem::size_of::<InternalNodeInfo>()
     );
     eprintln!(
-        "size of LeafNodeInfo: {:?}",
-        std::mem::size_of::<LeafNodeInfo>()
+        "size of NodeSummary: {:?}",
+        std::mem::size_of::<NodeSummary>()
     );
 
     let ctx = mk_context(&opts)?;
