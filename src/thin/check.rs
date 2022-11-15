@@ -175,10 +175,10 @@ impl NodeMap {
         }
     }
 
-    fn set_node_type(&mut self, blocknr: u32, t: NodeType) {
-        // FIXME: update two bits at once
+    fn set_type_(&mut self, blocknr: u32, t: NodeType) {
         match t {
             NodeType::Leaf => {
+                // FIXME: update two bits at once
                 self.node_type.insert(blocknr as usize * 2 + 1);
                 self.leaf_nodes.insert(blocknr as usize);
                 self.nr_leaves += 1;
@@ -201,7 +201,15 @@ impl NodeMap {
         self.internal_map
             .insert(blocknr, self.internal_info.len() as u32);
         self.internal_info.push(info);
-        self.set_node_type(blocknr, NodeType::Internal);
+        self.set_type_(blocknr, NodeType::Internal);
+        Ok(())
+    }
+
+    fn insert_leaf(&mut self, blocknr: u32) -> Result<()> {
+        if self.get_type(blocknr) != NodeType::None {
+            return Err(anyhow!("type changed"));
+        }
+        self.set_type_(blocknr, NodeType::Leaf);
         Ok(())
     }
 
@@ -212,13 +220,13 @@ impl NodeMap {
         self.error_map
             .insert(blocknr, self.node_errors.len() as u32);
         self.node_errors.push(e);
-        self.set_node_type(blocknr, NodeType::Error);
+        self.set_type_(blocknr, NodeType::Error);
         Ok(())
     }
 
     // returns total number of registered nodes
     fn len(&self) -> u32 {
-        return self.internal_info.len() as u32 + self.nr_leaves + self.node_errors.len() as u32
+        return self.internal_info.len() as u32 + self.nr_leaves
     }
 }
 
@@ -305,7 +313,7 @@ fn read_node_(
         if depth == 0 {
             // FIXME: do this by the caller?
             for loc in values {
-                nodes.set_node_type(loc as u32, NodeType::Leaf);
+                nodes.insert_leaf(loc as u32);
             }
         } else {
             // we could error each child rather than the current node
@@ -419,7 +427,7 @@ fn read_internal_nodes(
     let depth = get_depth(ctx, &mut path, root as u64, true).expect("get_depth failed");
 
     if depth == 0 {
-        nodes.set_node_type(root as u32, NodeType::Leaf);
+        nodes.insert_leaf(root as u32);
         return;
     }
 
@@ -568,23 +576,16 @@ fn check_mapping_bottom_level(
                         }
 
                         {
-                            match nodes.get_type(*loc as u32) {
-                                NodeType::Leaf => {
-                                    let nr_entries = keys.len();
-                                    let key_low = if nr_entries > 0 {keys[0]} else {0};
-                                    let key_high = if nr_entries > 0 {keys[nr_entries - 1]} else {0};
-                                    let sum = NodeSummary {
-                                        key_low,
-                                        key_high,
-                                        nr_entries: nr_entries as u64,
-                                    };
-                                    let mut sums = summaries.lock().unwrap();
-                                    sums.push(*loc as u32, sum);
-                                }
-                                _ => {
-                                    panic!("unexpected node type");
-                                }
-                            }
+                            let nr_entries = keys.len();
+                            let key_low = if nr_entries > 0 {keys[0]} else {0};
+                            let key_high = if nr_entries > 0 {keys[nr_entries - 1]} else {0};
+                            let sum = NodeSummary {
+                                key_low,
+                                key_high,
+                                nr_entries: nr_entries as u64,
+                            };
+                            let mut sums = summaries.lock().unwrap();
+                            sums.push(*loc as u32, sum);
                         }
                     }
                     _ => {
