@@ -110,7 +110,7 @@ impl<'a, V: Unpack> NodeVisitor<u64> for BlockValueVisitor<'a, V> {
                                 errs.push(e.index_context(keys[i]).into());
                             } else {
                                 let mut sm = self.sm.lock().unwrap();
-                                sm.inc(b.loc, 1).unwrap();
+                                sm.inc(b.loc).unwrap();
                             }
                         }
                     }

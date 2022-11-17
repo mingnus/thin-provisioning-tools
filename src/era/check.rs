@@ -17,7 +17,7 @@ use crate::report::*;
 
 fn inc_superblock(sm: &ASpaceMap) -> anyhow::Result<()> {
     let mut sm = sm.lock().unwrap();
-    sm.inc(SUPERBLOCK_LOCATION, 1)?;
+    sm.inc(SUPERBLOCK_LOCATION)?;
     Ok(())
 }
 

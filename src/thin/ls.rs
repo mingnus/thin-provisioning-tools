@@ -140,13 +140,13 @@ impl NodeVisitor<BlockTime> for BottomLevelVisitor {
             if block == start + len {
                 len += 1;
             } else {
-                data_sm.inc(start, len).unwrap();
+                data_sm.inc_many(start, len).unwrap();
                 start = block;
                 len = 1;
             }
         }
 
-        data_sm.inc(start, len).unwrap();
+        data_sm.inc_many(start, len).unwrap();
         Ok(())
     }
 

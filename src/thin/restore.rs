@@ -33,7 +33,8 @@ impl RefCounter<BlockTime> for MappingRC {
         return self.sm.lock().unwrap().get(v.block);
     }
     fn inc(&mut self, v: &BlockTime) -> Result<()> {
-        self.sm.lock().unwrap().inc(v.block, 1)
+        self.sm.lock().unwrap().inc(v.block)?;
+        Ok(())
     }
     fn dec(&mut self, v: &BlockTime) -> Result<()> {
         self.sm.lock().unwrap().dec(v.block)?;

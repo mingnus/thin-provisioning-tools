@@ -85,7 +85,7 @@ impl BTreeWalker {
     fn sm_inc(&self, b: u64) -> u32 {
         let mut sm = self.sm.lock().unwrap();
         let count = sm.get(b).unwrap();
-        sm.inc(b, 1).unwrap();
+        sm.inc(b).unwrap();
         count
     }
 

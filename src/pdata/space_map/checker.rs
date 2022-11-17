@@ -71,7 +71,7 @@ fn inc_entries(sm: &ASpaceMap, entries: &[IndexEntry]) -> Result<()> {
     let mut sm = sm.lock().unwrap();
     for ie in entries {
         // FIXME: checksumming bitmaps?
-        sm.inc(ie.blocknr, 1)?;
+        sm.inc(ie.blocknr)?;
     }
     Ok(())
 }
@@ -198,7 +198,7 @@ fn gather_metadata_index_entries(
 ) -> Result<Vec<IndexEntry>> {
     let b = engine.read(bitmap_root)?;
     let entries = unpack::<MetadataIndex>(b.get_data())?.indexes;
-    metadata_sm.lock().unwrap().inc(bitmap_root, 1)?;
+    metadata_sm.lock().unwrap().inc(bitmap_root)?;
     inc_entries(&metadata_sm, &entries[0..])?;
 
     Ok(entries)

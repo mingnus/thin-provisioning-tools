@@ -22,7 +22,7 @@ use crate::thin::superblock::*;
 
 fn inc_superblock(sm: &ASpaceMap) -> Result<()> {
     let mut sm = sm.lock().unwrap();
-    sm.inc(SUPERBLOCK_LOCATION, 1)?;
+    sm.inc(SUPERBLOCK_LOCATION)?;
     Ok(())
 }
 
@@ -87,7 +87,7 @@ fn verify_checksum(b: &Block) -> Result<()> {
 
 fn is_seen(loc: u32, metadata_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>) -> bool {
     let mut sm = metadata_sm.lock().unwrap();
-    let old = sm.inc_one(loc as u64).expect("space map inc failed");
+    let old = sm.inc(loc as u64).expect("space map inc failed");
     old > 0
 }
 
@@ -128,7 +128,7 @@ fn read_node_(
         if depth == 0 {
             let mut sm = metadata_sm.lock().unwrap();
             for (loc, kr) in values.iter().zip(child_keys) {
-                sm.inc(*loc, 1).expect("space map inc failed");
+                sm.inc(*loc).expect("space map inc failed");
                 nodes.insert(*loc as u32, NodeInfo::Leaf { keys: kr.clone() });
             }
         } else {
@@ -339,7 +339,7 @@ fn check_mapping_bottom_level(
                         // FIXME: check keys are within range
                         let mut data_sm = data_sm.lock().unwrap();
                         for v in values {
-                            data_sm.inc(v.block, 1).expect("data_sm.inc() failed");
+                            data_sm.inc(v.block).expect("data_sm.inc() failed");
                         }
                     }
                     _ => {
@@ -474,7 +474,7 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
     if sb.metadata_snap > 0 {
         {
             let mut metadata_sm = metadata_sm.lock().unwrap();
-            metadata_sm.inc(sb.metadata_snap, 1)?;
+            metadata_sm.inc(sb.metadata_snap)?;
         }
         let sb_snap = read_superblock(engine.as_ref(), sb.metadata_snap)?;
 

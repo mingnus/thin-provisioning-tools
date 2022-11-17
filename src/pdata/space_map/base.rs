@@ -15,10 +15,10 @@ pub trait SpaceMap {
     /// Returns the old ref count
     fn set(&mut self, b: u64, v: u32) -> Result<u32>;
 
-    fn inc(&mut self, begin: u64, len: u64) -> Result<()>;
+    fn inc_many(&mut self, begin: u64, len: u64) -> Result<()>;
 
     /// Returns the old ref count
-    fn inc_one(&mut self, b: u64) -> Result<u32> {
+    fn inc(&mut self, b: u64) -> Result<u32> {
         let old = self.get(b)?;
         assert!(old < u32::max_value());
         self.set(b, old + 1)?;
@@ -109,7 +109,7 @@ where
         Ok(old.into())
     }
 
-    fn inc(&mut self, begin: u64, len: u64) -> Result<()> {
+    fn inc_many(&mut self, begin: u64, len: u64) -> Result<()> {
         for b in begin..(begin + len) {
             let c = &mut self.counts[b as usize];
             assert!(*c < V::max_value());
@@ -124,7 +124,7 @@ where
         Ok(())
     }
 
-    fn inc_one(&mut self, b: u64) -> Result<u32> {
+    fn inc(&mut self, b: u64) -> Result<u32> {
         let c = &mut self.counts[b as usize];
         let old = *c;
         assert!(old < V::max_value());
@@ -243,7 +243,7 @@ impl SpaceMap for RestrictedSpaceMap {
         Ok(u32::from(old))
     }
 
-    fn inc(&mut self, begin: u64, len: u64) -> Result<()> {
+    fn inc_many(&mut self, begin: u64, len: u64) -> Result<()> {
         for b in begin..(begin + len) {
             if !self.counts.contains(b as usize) {
                 self.nr_allocated += 1;
@@ -352,7 +352,7 @@ impl SpaceMap for RestrictedTwoSpaceMap {
         Ok(old)
     }
 
-    fn inc(&mut self, begin: u64, len: u64) -> Result<()> {
+    fn inc_many(&mut self, begin: u64, len: u64) -> Result<()> {
         for b in begin..(begin + len) {
             let idx = (b << 1) as usize;
 
@@ -434,7 +434,7 @@ impl SpaceMap for NoopSpaceMap {
         Ok(0)
     }
 
-    fn inc(&mut self, _begin: u64, _len: u64) -> Result<()> {
+    fn inc_many(&mut self, _begin: u64, _len: u64) -> Result<()> {
         Ok(())
     }
 

@@ -56,7 +56,8 @@ impl RefCounter<u64> for SMRefCounter {
     }
 
     fn inc(&mut self, v: &u64) -> Result<()> {
-        self.sm.lock().unwrap().inc(*v, 1)
+        self.sm.lock().unwrap().inc(*v)?;
+        Ok(())
     }
 
     fn dec(&mut self, v: &u64) -> Result<()> {
@@ -285,7 +286,7 @@ impl<V: Pack + Unpack + Clone> NodeBuilder<V> {
         let maybe_root = (nodes.len() == 1) && self.nodes.is_empty() && self.values.is_empty();
         if maybe_root {
             let n = &nodes[0];
-            w.sm.lock().unwrap().inc(n.block, 1)?;
+            w.sm.lock().unwrap().inc(n.block)?;
             self.nodes.push(n.clone());
             return Ok(());
         }
@@ -326,7 +327,7 @@ impl<V: Pack + Unpack + Clone> NodeBuilder<V> {
 
                 // Add the remaining nodes.
                 for n in &nodes[1..] {
-                    w.sm.lock().unwrap().inc(n.block, 1)?;
+                    w.sm.lock().unwrap().inc(n.block)?;
                     self.nodes.push(n.clone());
                 }
             }
@@ -341,7 +342,7 @@ impl<V: Pack + Unpack + Clone> NodeBuilder<V> {
             } else {
                 // Add the nodes.
                 for n in nodes {
-                    w.sm.lock().unwrap().inc(n.block, 1)?;
+                    w.sm.lock().unwrap().inc(n.block)?;
                     self.nodes.push(n.clone());
                 }
             }

@@ -63,7 +63,7 @@ impl<'a> LeafWalker<'a> {
     fn sm_inc(&mut self, b: u64) -> u32 {
         let sm = &mut self.sm;
         let count = sm.get(b).unwrap();
-        sm.inc(b, 1).unwrap();
+        sm.inc(b).unwrap();
         count
     }
 
@@ -139,7 +139,7 @@ impl<'a> LeafWalker<'a> {
             if depth == 0 {
                 // it is the lowest internal
                 for i in 0..krs.len() {
-                    self.sm.inc(values[i], 1).expect("sm.inc() failed");
+                    self.sm.inc(values[i]).expect("sm.inc() failed");
                     for v in &values {
                         self.leaves.insert(*v as usize);
                     }

@@ -25,7 +25,7 @@ const DEFAULT_OBLOCKS: usize = 16777216;
 
 fn inc_superblock(sm: &ASpaceMap) -> anyhow::Result<()> {
     let mut sm = sm.lock().unwrap();
-    sm.inc(SUPERBLOCK_LOCATION, 1)?;
+    sm.inc(SUPERBLOCK_LOCATION)?;
     Ok(())
 }
 
