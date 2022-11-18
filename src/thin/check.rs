@@ -292,8 +292,6 @@ fn check_mapping_bottom_level(
     roots: &BTreeMap<u64, (Vec<u64>, u64)>,
     ignore_non_fatal: bool,
 ) -> Result<()> {
-    ctx.report.set_sub_title("mapping tree");
-
     let mut nodes = BTreeMap::new();
     let mut tree_roots = BTreeSet::new();
 
@@ -457,6 +455,15 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
         sb.mapping_root,
     )?;
 
+    // It's highly possible that the pool is damaged by multiple activation
+    // if the two trees are inconsistent. In this situation, there's no need to
+    // do further checking, and users should perform the repair process.
+    if !roots.keys().eq(devs.keys()) {
+        return Err(anyhow!(
+            "Inconsistency between the details tree and the mapping tree"
+        ));
+    }
+
     if opts.skip_mappings {
         let cleared = clear_needs_check_flag(ctx.engine.clone())?;
         if cleared {
@@ -479,7 +486,7 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
         let sb_snap = read_superblock(engine.as_ref(), sb.metadata_snap)?;
 
         // device details
-        btree_to_map_with_sm::<DeviceDetail>(
+        let devs_snap = btree_to_map_with_sm::<DeviceDetail>(
             &mut path,
             engine.clone(),
             metadata_sm.clone(),
@@ -495,6 +502,15 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
             opts.ignore_non_fatal,
             sb_snap.mapping_root,
         )?;
+
+        // FIXME: BTreeWalker doesn't check the node type of shared blocks.
+        //        Also, only the values in non-shared blocks are returned,
+        //        so we cannot make sure the device ids are 100% consistent.
+        if !roots_snap.keys().eq(devs_snap.keys()) {
+            return Err(anyhow!(
+                "Inconsistency of device ids found in metadata snapshot"
+            ));
+        }
 
         // mapping bottom level
         check_mapping_bottom_level(
@@ -632,6 +648,12 @@ pub fn check_with_maps(
         false,
         sb.mapping_root,
     )?;
+
+    if !roots.keys().eq(devs.keys()) {
+        return Err(anyhow!(
+            "Inconsistency between the details tree and the mapping tree"
+        ));
+    }
 
     // mapping bottom level
     let root = unpack::<SMRoot>(&sb.data_sm_root[0..])?;
