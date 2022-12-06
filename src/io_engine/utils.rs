@@ -58,13 +58,11 @@ impl<T: VectoredIo> ReadBlocks for VectoredBlockIo<T> {
                     }
                 }
                 Err(e) => {
-                    eprintln!("read failed: {:?}", e);
-                    assert!(false);
                     // Skip to the next iovec
                     remaining -= block_size;
                     pos += block_size as u64;
                     os_bufs = &mut os_bufs[1..];
-                    results.push(Err(anyhow!("read failed")));
+                    results.push(Err(anyhow!("read failed: {:?}", e)));
                 }
             }
         }
