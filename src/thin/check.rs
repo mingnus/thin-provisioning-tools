@@ -587,15 +587,9 @@ fn unpacker(
         let mut nodes = Vec::with_capacity(blocks.len());
 
         for b in blocks {
-            if verify_checksum(&b).is_err() {
-                continue;
-            }
-
             // Allow under full nodes in this phase.  The under full
             // property will be check later based on the path context.
-            let path = Vec::new();
-            if let Ok(node) = unpack_node::<BlockTime>(&path, b.get_data(), ignore_non_fatal, true)
-            {
+            if let Ok(node) = check_and_unpack_node::<BlockTime>(&b, ignore_non_fatal, true) {
                 nodes.push(node);
             }
         }
@@ -706,9 +700,6 @@ fn read_leaf_nodes(
                 }
 
                 let b = b.unwrap();
-                if verify_checksum(&b).is_err() {
-                    continue;
-                }
                 bs.push(b);
             }
 
