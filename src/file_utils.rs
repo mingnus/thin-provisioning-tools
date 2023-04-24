@@ -41,9 +41,13 @@ pub fn is_file(path: &Path) -> io::Result<bool> {
 
 //---------------------------------------
 
-const BLKGETSIZE64_CODE: u8 = 0x12;
+const BLK_IOC_CODE: u8 = 0x12;
 const BLKGETSIZE64_SEQ: u8 = 114;
-ioctl_read!(ioctl_blkgetsize64, BLKGETSIZE64_CODE, BLKGETSIZE64_SEQ, u64);
+ioctl_read_bad!(
+    ioctl_blkgetsize64,
+    request_code_read!(BLK_IOC_CODE, BLKGETSIZE64_SEQ, std::mem::size_of::<usize>()),
+    u64
+);
 
 pub fn fail<T>(msg: &str) -> io::Result<T> {
     let e = io::Error::new(io::ErrorKind::Other, msg);
@@ -57,7 +61,7 @@ fn get_device_size<P: AsRef<Path>>(path: P) -> io::Result<u64> {
     unsafe {
         match ioctl_blkgetsize64(fd, &mut cap) {
             Ok(_) => Ok(cap),
-            _ => fail("BLKGETSIZE64 ioctl failed"),
+            _ => Err(io::Error::last_os_error()),
         }
     }
 }
