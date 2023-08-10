@@ -411,19 +411,27 @@ fn clear_needs_check_if_skip_mappings() -> Result<()> {
 #[test]
 fn clear_needs_check_if_ignore_non_fatal_errors() -> Result<()> {
     let mut td = TestDir::new()?;
-    let md = prep_metadata(&mut td)?;
 
-    set_needs_check(&md)?;
-    generate_metadata_leaks(&md, 1, 0, 1)?; // non-fatal error
+    let mut proc = || {
+        let md = prep_metadata(&mut td)?;
+        set_needs_check(&md)?;
+        generate_metadata_leaks(&md, 1, 0, 1)?; // non-fatal error
 
-    assert!(get_needs_check(&md)?);
-    run_ok(thin_check_cmd(args![
-        "--clear-needs-check-flag",
-        "--ignore-non-fatal-errors",
-        &md
-    ]))?;
-    assert!(!get_needs_check(&md)?);
-    Ok(())
+        assert!(get_needs_check(&md)?);
+        run_ok(thin_check_cmd(args![
+            "--clear-needs-check-flag",
+            "--ignore-non-fatal-errors",
+            &md
+        ]))?;
+        assert!(!get_needs_check(&md)?);
+        Ok(())
+    };
+
+    let result = proc();
+    if result.is_err() {
+        td.dont_clean_up();
+    }
+    result
 }
 
 //------------------------------------------
