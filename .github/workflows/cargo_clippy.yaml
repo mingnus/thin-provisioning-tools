@@ -7,10 +7,10 @@ on:
     branches: ['**']
 
 jobs:
-  dummy:
+  cargo-clippy:
     runs-on: ubuntu-latest
     steps:
-      - uses: dtolnay/rust-toolchain@master
+      - uses: dtolnay/rust-toolchain@stable
       - uses: actions/checkout@v3
       - name: cargo-clippy
         run: cargo clippy --locked
