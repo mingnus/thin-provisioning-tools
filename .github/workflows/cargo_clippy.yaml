@@ -1,0 +1,16 @@
+name: Test
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches: ['**']
+
+jobs:
+  dummy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dtolnay/rust-toolchain@master
+      - uses: actions/checkout@v3
+      - name: cargo-clippy
+        run: cargo clippy --locked
