@@ -2,6 +2,7 @@ name: Test
 on:
   - push
   - pull_request
+  - create
 
 jobs:
   cargo-clippy:
