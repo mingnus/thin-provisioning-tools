@@ -5,7 +5,6 @@ use std::sync::Arc;
 
 use thinp::commands::engine::*;
 use thinp::io_engine::IoEngine;
-use thinp::pdata::btree_iterator::*;
 use thinp::pdata::btree_walker::btree_to_map;
 use thinp::pdata::space_map::common::SMRoot;
 use thinp::pdata::space_map::metadata::core_metadata_sm;
@@ -22,14 +21,172 @@ use thinp::write_batcher::WriteBatcher;
 
 //------------------------------------------
 
+use std::collections::BTreeMap;
+use thinp::io_engine::Block;
+use thinp::pdata::btree::{self, *};
+use thinp::pdata::btree_error::KeyRange;
+use thinp::pdata::btree_leaf_walker::LeafVisitor;
+use thinp::pdata::btree_leaf_walker::LeafWalker;
+use thinp::pdata::space_map::RestrictedSpaceMap;
+use thinp::pdata::unpack::Unpack;
+
+struct CollectLeaves {
+    leaves: Vec<u64>,
+}
+
+impl CollectLeaves {
+    fn new() -> CollectLeaves {
+        CollectLeaves { leaves: Vec::new() }
+    }
+}
+
+impl LeafVisitor<BlockTime> for CollectLeaves {
+    fn visit(&mut self, _kr: &KeyRange, b: u64) -> btree::Result<()> {
+        self.leaves.push(b);
+        Ok(())
+    }
+
+    fn visit_again(&mut self, b: u64) -> btree::Result<()> {
+        self.leaves.push(b);
+        Ok(())
+    }
+
+    fn end_walk(&mut self) -> btree::Result<()> {
+        Ok(())
+    }
+}
+
+fn collect_leaves(
+    engine: Arc<dyn IoEngine + Send + Sync>,
+    roots: &[u64],
+) -> Result<BTreeMap<u64, Vec<u64>>> {
+    let mut map: BTreeMap<u64, Vec<u64>> = BTreeMap::new();
+    let mut sm = RestrictedSpaceMap::new(engine.get_nr_blocks());
+
+    for r in roots {
+        let mut w = LeafWalker::new(engine.clone(), &mut sm, false);
+        let mut v = CollectLeaves::new();
+        let mut path = vec![0];
+        w.walk::<CollectLeaves, BlockTime>(&mut path, &mut v, *r)?;
+
+        map.insert(*r, v.leaves);
+    }
+
+    Ok(map)
+}
+
+//------------------------------------------
+
+struct MappingIterator {
+    engine: Arc<dyn IoEngine + Send + Sync>,
+    leaves: Vec<u64>,
+    batch_size: usize,
+    cached_leaves: Vec<Block>,
+    node: Node<BlockTime>,
+    pos: [usize; 2], // leaf index and entry index in leaf
+}
+
+impl MappingIterator {
+    fn new(engine: Arc<dyn IoEngine + Send + Sync>, leaves: Vec<u64>) -> Result<Self> {
+        let batch_size = engine.get_batch_size();
+        let len = std::cmp::min(batch_size, leaves.len());
+        let cached_leaves = Self::read_blocks(&engine, &leaves[..len])?;
+        let node =
+            unpack_node::<BlockTime>(&[], cached_leaves[0].get_data(), true, leaves.len() > 1)?;
+        let pos = [0, 0];
+
+        Ok(Self {
+            engine,
+            leaves,
+            batch_size,
+            cached_leaves,
+            node,
+            pos,
+        })
+    }
+
+    fn read_blocks(
+        engine: &Arc<dyn IoEngine + Send + Sync>,
+        blocks: &[u64],
+    ) -> std::io::Result<Vec<Block>> {
+        engine.read_many(blocks)?.into_iter().collect()
+    }
+
+    fn get(&self) -> Option<(u64, &BlockTime)> {
+        if self.pos[0] < self.leaves.len() {
+            match &self.node {
+                Node::Internal { .. } => {
+                    panic!("not a leaf");
+                }
+                Node::Leaf { keys, values, .. } => {
+                    if keys.is_empty() {
+                        None
+                    } else {
+                        Some((keys[self.pos[1]], &values[self.pos[1]]))
+                    }
+                }
+            }
+        } else {
+            None
+        }
+    }
+
+    fn get_nr_entries<V: Unpack>(node: &Node<V>) -> usize {
+        match node {
+            Node::Internal { header, .. } => header.nr_entries as usize,
+            Node::Leaf { header, .. } => header.nr_entries as usize,
+        }
+    }
+
+    fn inc_pos(&mut self) -> bool {
+        if self.pos[0] < self.leaves.len() {
+            self.pos[1] += 1;
+            self.pos[1] >= Self::get_nr_entries(&self.node)
+        } else {
+            false
+        }
+    }
+
+    fn next_node(&mut self) -> Result<()> {
+        self.pos[0] += 1;
+        self.pos[1] = 0;
+
+        if self.pos[0] == self.leaves.len() {
+            return Ok(()); // reach the end
+        }
+
+        let idx = self.pos[0] % self.batch_size;
+
+        // FIXME: reuse the code in the constructor
+        if idx == 0 {
+            let endpos = std::cmp::min(self.pos[0] + self.batch_size, self.leaves.len());
+            self.cached_leaves =
+                Self::read_blocks(&self.engine, &self.leaves[self.pos[0]..endpos])?;
+        }
+
+        self.node = unpack_node::<BlockTime>(&[], self.cached_leaves[idx].get_data(), true, true)?;
+
+        Ok(())
+    }
+
+    fn step(&mut self) -> Result<()> {
+        if self.inc_pos() {
+            self.next_node()?;
+        }
+        Ok(())
+    }
+}
+
+//------------------------------------------
+
 struct MappingStream {
-    iter: BTreeIterator<BlockTime>,
+    iter: MappingIterator,
     current: Option<(u64, BlockTime)>,
 }
 
 impl MappingStream {
-    fn new(engine: Arc<dyn IoEngine + Send + Sync>, root: u64) -> Result<Self> {
-        let iter = BTreeIterator::<BlockTime>::new(engine, root)?;
+    fn new(engine: Arc<dyn IoEngine + Send + Sync>, leaves: Vec<u64>) -> Result<Self> {
+        let iter = MappingIterator::new(engine, leaves)?;
         let current = iter.get().map(|(k, v)| (k, *v));
         Ok(Self { iter, current })
     }
@@ -106,8 +263,10 @@ impl MergeIterator {
         base_root: u64,
         snap_root: u64,
     ) -> Result<Self> {
-        let base_stream = MappingStream::new(engine.clone(), base_root)?;
-        let snap_stream = MappingStream::new(engine, snap_root)?;
+        let mut leaves = collect_leaves(engine.clone(), &[base_root, snap_root])?;
+        let base_stream = MappingStream::new(engine.clone(), leaves.remove(&base_root).unwrap())?;
+        let snap_stream = MappingStream::new(engine, leaves.remove(&snap_root).unwrap())?;
+
         Ok(Self {
             base_stream,
             snap_stream,
@@ -213,6 +372,7 @@ fn merge(
 
     out.device_e()?;
     out.superblock_e()?;
+    out.eof()?;
 
     Ok(())
 }
@@ -236,7 +396,10 @@ struct Context {
 
 fn mk_context(opts: &ThinMergeOptions) -> Result<Context> {
     let engine_in = EngineBuilder::new(opts.input, &opts.engine_opts).build()?;
-    let engine_out = EngineBuilder::new(opts.output, &opts.engine_opts)
+
+    let mut out_opts = opts.engine_opts.clone();
+    out_opts.engine_type = EngineType::Sync; // sync write temporarily
+    let engine_out = EngineBuilder::new(opts.output, &out_opts)
         .write(true)
         .build()?;
 
