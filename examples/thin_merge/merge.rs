@@ -83,7 +83,8 @@ struct MappingIterator {
     batch_size: usize,
     cached_leaves: Vec<Block>,
     node: Node<BlockTime>,
-    pos: [usize; 2], // leaf index and entry index in leaf
+    nr_entries: usize, // nr_entries in the current visiting node
+    pos: [usize; 2],   // leaf index and entry index in leaf
 }
 
 impl MappingIterator {
@@ -93,6 +94,8 @@ impl MappingIterator {
         let cached_leaves = Self::read_blocks(&engine, &leaves[..len])?;
         let node =
             unpack_node::<BlockTime>(&[], cached_leaves[0].get_data(), true, leaves.len() > 1)?;
+        let nr_entries = Self::get_nr_entries(&node);
+
         let pos = [0, 0];
 
         Ok(Self {
@@ -101,6 +104,7 @@ impl MappingIterator {
             batch_size,
             cached_leaves,
             node,
+            nr_entries,
             pos,
         })
     }
@@ -141,7 +145,7 @@ impl MappingIterator {
     fn inc_pos(&mut self) -> bool {
         if self.pos[0] < self.leaves.len() {
             self.pos[1] += 1;
-            self.pos[1] >= Self::get_nr_entries(&self.node)
+            self.pos[1] >= self.nr_entries
         } else {
             false
         }
@@ -165,6 +169,7 @@ impl MappingIterator {
         }
 
         self.node = unpack_node::<BlockTime>(&[], self.cached_leaves[idx].get_data(), true, true)?;
+        self.nr_entries = Self::get_nr_entries(&self.node);
 
         Ok(())
     }
