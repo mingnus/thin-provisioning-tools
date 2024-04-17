@@ -1,7 +1,8 @@
 use anyhow::{anyhow, Result};
 use std::cmp::Ordering;
 use std::path::Path;
-use std::sync::Arc;
+use std::sync::{mpsc, Arc};
+use std::thread;
 
 use thinp::commands::engine::*;
 use thinp::io_engine::IoEngine;
@@ -325,6 +326,8 @@ fn merge(
     origin_id: u64,
     snap_id: u64,
 ) -> Result<()> {
+    const QUEUE_DEPTH: usize = 4096;
+
     let roots = btree_to_map::<u64>(&mut vec![], engine.clone(), false, sb.mapping_root)?;
     let details =
         btree_to_map::<DeviceDetail>(&mut vec![], engine.clone(), false, sb.details_root)?;
@@ -340,7 +343,6 @@ fn merge(
         .ok_or_else(|| anyhow!("Unable to find mapping tree for the snapshot"))?;
 
     let mut iter = MergeIterator::new(engine, origin_root, snap_root)?;
-    let mut builder = RunBuilder::new();
 
     let data_root = unpack::<SMRoot>(&sb.data_sm_root[0..])?;
     let out_sb = ir::Superblock {
@@ -362,18 +364,36 @@ fn merge(
         snap_time: snap_dev.snapshotted_time,
     };
 
+    let (tx, rx) = mpsc::sync_channel::<ir::Map>(QUEUE_DEPTH);
+
+    let merger = thread::spawn(move || -> Result<()> {
+        let mut builder = RunBuilder::new();
+
+        while let Some((k, v)) = iter.next()? {
+            if let Some(run) = builder.next(k, v.block, v.time) {
+                tx.send(run)?;
+            }
+        }
+
+        if let Some(run) = builder.complete() {
+            tx.send(run)?;
+        }
+
+        drop(tx);
+        Ok(())
+    });
+
     out.superblock_b(&out_sb)?;
     out.device_b(&out_dev)?;
 
-    while let Some((k, v)) = iter.next()? {
-        if let Some(run) = builder.next(k, v.block, v.time) {
-            out.map(&run)?;
-        }
-    }
-
-    if let Some(run) = builder.complete() {
+    while let Ok(run) = rx.recv() {
         out.map(&run)?;
     }
+
+    merger
+        .join()
+        .expect("unexpected error")
+        .expect("metadata contains error");
 
     out.device_e()?;
     out.superblock_e()?;
