@@ -368,14 +368,14 @@ fn merge(
 
     let merger = thread::spawn(move || -> Result<()> {
         let mut builder = RunBuilder::new();
-        let mut runs = Vec::new();
+        let mut runs = Vec::with_capacity(1024);
 
         while let Some((k, v)) = iter.next()? {
             if let Some(run) = builder.next(k, v.block, v.time) {
                 runs.push(run);
                 if runs.len() == 1024 {
                     tx.send(runs)?;
-                    runs = Vec::new();
+                    runs = Vec::with_capacity(1024);
                 }
             }
         }
