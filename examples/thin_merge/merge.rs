@@ -326,7 +326,7 @@ fn merge(
     origin_id: u64,
     snap_id: u64,
 ) -> Result<()> {
-    const QUEUE_DEPTH: usize = 4096;
+    const QUEUE_DEPTH: usize = 4;
 
     let roots = btree_to_map::<u64>(&mut vec![], engine.clone(), false, sb.mapping_root)?;
     let details =
@@ -364,19 +364,28 @@ fn merge(
         snap_time: snap_dev.snapshotted_time,
     };
 
-    let (tx, rx) = mpsc::sync_channel::<ir::Map>(QUEUE_DEPTH);
+    let (tx, rx) = mpsc::sync_channel::<Vec<ir::Map>>(QUEUE_DEPTH);
 
     let merger = thread::spawn(move || -> Result<()> {
         let mut builder = RunBuilder::new();
+        let mut runs = Vec::new();
 
         while let Some((k, v)) = iter.next()? {
             if let Some(run) = builder.next(k, v.block, v.time) {
-                tx.send(run)?;
+                runs.push(run);
+                if runs.len() == 1024 {
+                    tx.send(runs)?;
+                    runs = Vec::new();
+                }
             }
         }
 
         if let Some(run) = builder.complete() {
-            tx.send(run)?;
+            runs.push(run);
+        }
+
+        if !runs.is_empty() {
+            tx.send(runs)?;
         }
 
         drop(tx);
@@ -386,8 +395,10 @@ fn merge(
     out.superblock_b(&out_sb)?;
     out.device_b(&out_dev)?;
 
-    while let Ok(run) = rx.recv() {
-        out.map(&run)?;
+    while let Ok(runs) = rx.recv() {
+        for run in &runs {
+            out.map(run)?;
+        }
     }
 
     merger
