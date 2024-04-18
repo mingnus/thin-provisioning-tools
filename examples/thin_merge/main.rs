@@ -85,7 +85,7 @@ impl<'a> Command<'a> for ThinMergeCommand {
         }
 
         let origin = *matches.get_one::<u64>("ORIGIN").unwrap();
-        let snapshot = *matches.get_one::<u64>("SNAPSHOT").unwrap();
+        let snapshot = matches.get_one::<u64>("SNAPSHOT").cloned();
 
         let opts = ThinMergeOptions {
             input: input_file,

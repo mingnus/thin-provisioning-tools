@@ -413,6 +413,98 @@ fn merge(
     Ok(())
 }
 
+fn dump_single_device(
+    engine: Arc<dyn IoEngine + Send + Sync>,
+    out: &mut dyn MetadataVisitor,
+    sb: &Superblock,
+    dev_id: u64,
+) -> Result<()> {
+    const QUEUE_DEPTH: usize = 4;
+
+    let roots = btree_to_map::<u64>(&mut vec![], engine.clone(), false, sb.mapping_root)?;
+    let details =
+        btree_to_map::<DeviceDetail>(&mut vec![], engine.clone(), false, sb.details_root)?;
+
+    let root = *roots
+        .get(&dev_id)
+        .ok_or_else(|| anyhow!("Unable to find mapping tree for the origin"))?;
+    let details = *details
+        .get(&dev_id)
+        .ok_or_else(|| anyhow!("Unable to find the details for the origin"))?;
+
+    let mut leaves = collect_leaves(engine.clone(), &[root])?;
+    let mut iter = MappingIterator::new(engine.clone(), leaves.remove(&root).unwrap())?;
+
+    let data_root = unpack::<SMRoot>(&sb.data_sm_root[0..])?;
+    let out_sb = ir::Superblock {
+        uuid: "".to_string(),
+        time: sb.time,
+        transaction: sb.transaction_id,
+        flags: None,
+        version: Some(sb.version),
+        data_block_size: sb.data_block_size,
+        nr_data_blocks: data_root.nr_blocks,
+        metadata_snap: None,
+    };
+
+    let out_dev = ir::Device {
+        dev_id: dev_id as u32,
+        mapped_blocks: details.mapped_blocks,
+        transaction: details.transaction_id,
+        creation_time: details.creation_time,
+        snap_time: details.snapshotted_time,
+    };
+
+    let (tx, rx) = mpsc::sync_channel::<Vec<ir::Map>>(QUEUE_DEPTH);
+
+    let dumper = thread::spawn(move || -> Result<()> {
+        let mut builder = RunBuilder::new();
+        let mut runs = Vec::with_capacity(1024);
+
+        while let Some((k, v)) = iter.get() {
+            if let Some(run) = builder.next(k, v.block, v.time) {
+                runs.push(run);
+                if runs.len() == 1024 {
+                    tx.send(runs)?;
+                    runs = Vec::with_capacity(1024);
+                }
+            }
+            iter.step()?;
+        }
+
+        if let Some(run) = builder.complete() {
+            runs.push(run);
+        }
+
+        if !runs.is_empty() {
+            tx.send(runs)?;
+        }
+
+        drop(tx);
+        Ok(())
+    });
+
+    out.superblock_b(&out_sb)?;
+    out.device_b(&out_dev)?;
+
+    while let Ok(runs) = rx.recv() {
+        for run in &runs {
+            out.map(run)?;
+        }
+    }
+
+    dumper
+        .join()
+        .expect("unexpected error")
+        .expect("metadata contains error");
+
+    out.device_e()?;
+    out.superblock_e()?;
+    out.eof()?;
+
+    Ok(())
+}
+
 //------------------------------------------
 
 pub struct ThinMergeOptions<'a> {
@@ -421,7 +513,7 @@ pub struct ThinMergeOptions<'a> {
     pub engine_opts: EngineOptions,
     pub report: Arc<Report>,
     pub origin: u64,
-    pub snapshot: u64,
+    pub snapshot: Option<u64>,
 }
 
 struct Context {
@@ -463,13 +555,11 @@ pub fn merge_thins(opts: ThinMergeOptions) -> Result<()> {
     let mut w = WriteBatcher::new(ctx.engine_out, sm.clone(), batch_size);
     let mut restorer = Restorer::new(&mut w, ctx.report);
 
-    merge(
-        ctx.engine_in,
-        &mut restorer,
-        &sb,
-        opts.origin,
-        opts.snapshot,
-    )
+    if let Some(snapshot) = opts.snapshot {
+        merge(ctx.engine_in, &mut restorer, &sb, opts.origin, snapshot)
+    } else {
+        dump_single_device(ctx.engine_in, &mut restorer, &sb, opts.origin)
+    }
 }
 
 //------------------------------------------
