@@ -322,17 +322,44 @@ impl MergeIterator {
 
 //------------------------------------------
 
-fn merge(
+fn update_device_details(
     engine: Arc<dyn IoEngine + Send + Sync>,
-    out: &mut dyn MetadataVisitor,
+    mapped_blocks: u64,
+) -> Result<()> {
+    let sb = read_superblock(engine.as_ref(), SUPERBLOCK_LOCATION)?;
+    let b = engine.read(sb.details_root)?;
+    let mut details_leaf = unpack_node::<DeviceDetail>(&[], b.get_data(), false, true)?;
+
+    if let Node::Leaf { ref mut values, .. } = details_leaf {
+        values[0].mapped_blocks = mapped_blocks;
+    } else {
+        return Err(anyhow!("unexpected node type"));
+    }
+
+    let mut cursor = std::io::Cursor::new(b.get_data());
+    pack_node(&details_leaf, &mut cursor)?;
+    thinp::checksum::write_checksum(b.get_data(), thinp::checksum::BT::NODE)?;
+    engine.write(&b)?;
+
+    Ok(())
+}
+
+fn merge(
+    engine_in: Arc<dyn IoEngine + Send + Sync>,
+    engine_out: Arc<dyn IoEngine + Send + Sync>,
+    report: Arc<Report>,
     sb: &Superblock,
     origin_id: u64,
     snap_id: u64,
 ) -> Result<()> {
+    let sm = core_metadata_sm(engine_out.get_nr_blocks(), 2);
+    let batch_size = engine_out.get_batch_size();
+    let mut w = WriteBatcher::new(engine_out.clone(), sm.clone(), batch_size);
+    let mut restorer = Restorer::new(&mut w, report);
 
-    let roots = btree_to_map::<u64>(&mut vec![], engine.clone(), false, sb.mapping_root)?;
+    let roots = btree_to_map::<u64>(&mut vec![], engine_in.clone(), false, sb.mapping_root)?;
     let details =
-        btree_to_map::<DeviceDetail>(&mut vec![], engine.clone(), false, sb.details_root)?;
+        btree_to_map::<DeviceDetail>(&mut vec![], engine_in.clone(), false, sb.details_root)?;
 
     let origin_root = *roots
         .get(&origin_id)
@@ -344,7 +371,7 @@ fn merge(
         .get(&snap_id)
         .ok_or_else(|| anyhow!("Unable to find mapping tree for the snapshot"))?;
 
-    let mut iter = MergeIterator::new(engine, origin_root, snap_root)?;
+    let mut iter = MergeIterator::new(engine_in.clone(), origin_root, snap_root)?;
 
     let data_root = unpack::<SMRoot>(&sb.data_sm_root[0..])?;
     let out_sb = ir::Superblock {
@@ -394,12 +421,14 @@ fn merge(
         Ok(())
     });
 
-    out.superblock_b(&out_sb)?;
-    out.device_b(&out_dev)?;
+    restorer.superblock_b(&out_sb)?;
+    restorer.device_b(&out_dev)?;
 
+    let mut mapped_blocks = 0;
     while let Ok(runs) = rx.recv() {
         for run in &runs {
-            out.map(run)?;
+            restorer.map(run)?;
+            mapped_blocks += run.len;
         }
     }
 
@@ -408,22 +437,30 @@ fn merge(
         .expect("unexpected error")
         .expect("metadata contains error");
 
-    out.device_e()?;
-    out.superblock_e()?;
-    out.eof()?;
+    restorer.device_e()?;
+    restorer.superblock_e()?;
+    restorer.eof()?;
+
+    update_device_details(engine_out, mapped_blocks)?;
 
     Ok(())
 }
 
 fn dump_single_device(
-    engine: Arc<dyn IoEngine + Send + Sync>,
-    out: &mut dyn MetadataVisitor,
+    engine_in: Arc<dyn IoEngine + Send + Sync>,
+    engine_out: Arc<dyn IoEngine + Send + Sync>,
+    report: Arc<Report>,
     sb: &Superblock,
     dev_id: u64,
 ) -> Result<()> {
-    let roots = btree_to_map::<u64>(&mut vec![], engine.clone(), false, sb.mapping_root)?;
+    let sm = core_metadata_sm(engine_out.get_nr_blocks(), 2);
+    let batch_size = engine_out.get_batch_size();
+    let mut w = WriteBatcher::new(engine_out, sm.clone(), batch_size);
+    let mut restorer = Restorer::new(&mut w, report);
+
+    let roots = btree_to_map::<u64>(&mut vec![], engine_in.clone(), false, sb.mapping_root)?;
     let details =
-        btree_to_map::<DeviceDetail>(&mut vec![], engine.clone(), false, sb.details_root)?;
+        btree_to_map::<DeviceDetail>(&mut vec![], engine_in.clone(), false, sb.details_root)?;
 
     let root = *roots
         .get(&dev_id)
@@ -432,8 +469,8 @@ fn dump_single_device(
         .get(&dev_id)
         .ok_or_else(|| anyhow!("Unable to find the details for the origin"))?;
 
-    let mut leaves = collect_leaves(engine.clone(), &[root])?;
-    let mut iter = MappingIterator::new(engine.clone(), leaves.remove(&root).unwrap())?;
+    let mut leaves = collect_leaves(engine_in.clone(), &[root])?;
+    let mut iter = MappingIterator::new(engine_in, leaves.remove(&root).unwrap())?;
 
     let data_root = unpack::<SMRoot>(&sb.data_sm_root[0..])?;
     let out_sb = ir::Superblock {
@@ -484,12 +521,12 @@ fn dump_single_device(
         Ok(())
     });
 
-    out.superblock_b(&out_sb)?;
-    out.device_b(&out_dev)?;
+    restorer.superblock_b(&out_sb)?;
+    restorer.device_b(&out_dev)?;
 
     while let Ok(runs) = rx.recv() {
         for run in &runs {
-            out.map(run)?;
+            restorer.map(run)?;
         }
     }
 
@@ -498,9 +535,9 @@ fn dump_single_device(
         .expect("unexpected error")
         .expect("metadata contains error");
 
-    out.device_e()?;
-    out.superblock_e()?;
-    out.eof()?;
+    restorer.device_e()?;
+    restorer.superblock_e()?;
+    restorer.eof()?;
 
     Ok(())
 }
@@ -550,15 +587,10 @@ pub fn merge_thins(opts: ThinMergeOptions) -> Result<()> {
     // ensure the metadata is consistent
     is_superblock_consistent(sb.clone(), ctx.engine_in.clone(), false)?;
 
-    let sm = core_metadata_sm(ctx.engine_out.get_nr_blocks(), 2);
-    let batch_size = ctx.engine_out.get_batch_size();
-    let mut w = WriteBatcher::new(ctx.engine_out, sm.clone(), batch_size);
-    let mut restorer = Restorer::new(&mut w, ctx.report);
-
     if let Some(snapshot) = opts.snapshot {
-        merge(ctx.engine_in, &mut restorer, &sb, opts.origin, snapshot)
+        merge(ctx.engine_in, ctx.engine_out, ctx.report, &sb, opts.origin, snapshot)
     } else {
-        dump_single_device(ctx.engine_in, &mut restorer, &sb, opts.origin)
+        dump_single_device(ctx.engine_in, ctx.engine_out, ctx.report, &sb, opts.origin)
     }
 }
 
