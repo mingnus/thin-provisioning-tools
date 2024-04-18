@@ -31,6 +31,9 @@ use thinp::pdata::btree_leaf_walker::LeafWalker;
 use thinp::pdata::space_map::RestrictedSpaceMap;
 use thinp::pdata::unpack::Unpack;
 
+const QUEUE_DEPTH: usize = 4;
+const BUFFER_LEN: usize = 1024;
+
 struct CollectLeaves {
     leaves: Vec<u64>,
 }
@@ -326,7 +329,6 @@ fn merge(
     origin_id: u64,
     snap_id: u64,
 ) -> Result<()> {
-    const QUEUE_DEPTH: usize = 4;
 
     let roots = btree_to_map::<u64>(&mut vec![], engine.clone(), false, sb.mapping_root)?;
     let details =
@@ -368,14 +370,14 @@ fn merge(
 
     let merger = thread::spawn(move || -> Result<()> {
         let mut builder = RunBuilder::new();
-        let mut runs = Vec::with_capacity(1024);
+        let mut runs = Vec::with_capacity(BUFFER_LEN);
 
         while let Some((k, v)) = iter.next()? {
             if let Some(run) = builder.next(k, v.block, v.time) {
                 runs.push(run);
-                if runs.len() == 1024 {
+                if runs.len() == BUFFER_LEN {
                     tx.send(runs)?;
-                    runs = Vec::with_capacity(1024);
+                    runs = Vec::with_capacity(BUFFER_LEN);
                 }
             }
         }
@@ -419,8 +421,6 @@ fn dump_single_device(
     sb: &Superblock,
     dev_id: u64,
 ) -> Result<()> {
-    const QUEUE_DEPTH: usize = 4;
-
     let roots = btree_to_map::<u64>(&mut vec![], engine.clone(), false, sb.mapping_root)?;
     let details =
         btree_to_map::<DeviceDetail>(&mut vec![], engine.clone(), false, sb.details_root)?;
@@ -459,14 +459,14 @@ fn dump_single_device(
 
     let dumper = thread::spawn(move || -> Result<()> {
         let mut builder = RunBuilder::new();
-        let mut runs = Vec::with_capacity(1024);
+        let mut runs = Vec::with_capacity(BUFFER_LEN);
 
         while let Some((k, v)) = iter.get() {
             if let Some(run) = builder.next(k, v.block, v.time) {
                 runs.push(run);
-                if runs.len() == 1024 {
+                if runs.len() == BUFFER_LEN {
                     tx.send(runs)?;
-                    runs = Vec::with_capacity(1024);
+                    runs = Vec::with_capacity(BUFFER_LEN);
                 }
             }
             iter.step()?;
