@@ -45,6 +45,10 @@ impl SyncIoEngine {
         Err(io::Error::new(io::ErrorKind::Other, "read failed"))
     }
 
+    fn bad_write() -> io::Error {
+        io::Error::new(io::ErrorKind::Other, "write failed")
+    }
+
     fn read_many_(input: &File, blocks: &[u64]) -> Result<Vec<Result<Block>>> {
         const GAP_THRESHOLD: u64 = 8;
 
@@ -150,6 +154,51 @@ impl SyncIoEngine {
 
         Ok(results)
     }
+
+    fn write_many_(output: &File, blocks: &[Block]) -> Result<Vec<Result<()>>> {
+        if blocks.is_empty() {
+            return Ok(vec![]);
+        }
+
+        let vio: VectoredBlockIo<&File> = output.into();
+        let bs: Vec<u64> = blocks.iter().map(|b| b.loc).collect();
+        let batches = generate_runs(&bs, 0, libc::UIO_MAXIOV as u64);
+        let mut issued: usize = 0;
+        let mut results: Vec<Result<()>> = Vec::with_capacity(blocks.len());
+
+        for batch in batches {
+            assert_eq!(batch.len(), 1); // No gaps in a single batch
+
+            let (batch_start, batch_size) = if let RunOp::Run(b, e) = batch[0] {
+                (b, (e - b) as usize)
+            } else {
+                (0, 0)
+            };
+
+            assert!(batch_size > 0);
+
+            // Issue io
+            let buffers: Vec<&[u8]> = blocks[issued..(issued + batch_size)]
+                .iter()
+                .map(|b| b.as_ref())
+                .collect();
+            let run_results = vio.write_blocks(&buffers, batch_start * BLOCK_SIZE as u64);
+            issued += batch_size;
+
+            if let Ok(run_results) = run_results {
+                for r in run_results {
+                    results.push(r.map_err(|_| Self::bad_write()));
+                }
+            } else {
+                // Error everything
+                for _ in 0..batch_size {
+                    results.push(Err(Self::bad_write()));
+                }
+            }
+        }
+
+        Ok(results)
+    }
 }
 
 impl IoEngine for SyncIoEngine {
@@ -183,11 +232,7 @@ impl IoEngine for SyncIoEngine {
     }
 
     fn write_many(&self, blocks: &[Block]) -> Result<Vec<Result<()>>> {
-        let mut bs = Vec::new();
-        for b in blocks {
-            bs.push(self.write(b));
-        }
-        Ok(bs)
+        Self::write_many_(&self.file, blocks)
     }
 }
 
