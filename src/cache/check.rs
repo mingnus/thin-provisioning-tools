@@ -34,7 +34,6 @@ mod format1 {
     use super::*;
 
     pub struct MappingChecker {
-        nr_origin_blocks: u64,
         seen_oblocks: Mutex<FixedBitSet>,
     }
 
@@ -42,12 +41,10 @@ mod format1 {
         pub fn new(nr_origin_blocks: Option<u64>) -> MappingChecker {
             if let Some(n) = nr_origin_blocks {
                 MappingChecker {
-                    nr_origin_blocks: n,
                     seen_oblocks: Mutex::new(FixedBitSet::with_capacity(n as usize)),
                 }
             } else {
                 MappingChecker {
-                    nr_origin_blocks: MAX_ORIGIN_BLOCKS,
                     seen_oblocks: Mutex::new(FixedBitSet::with_capacity(DEFAULT_OBLOCKS)),
                 }
             }
@@ -75,11 +72,7 @@ mod format1 {
                 }
                 return Ok(());
             }
-            if m.oblock >= self.nr_origin_blocks {
-                return Err(array::value_err(
-                    "mapping beyond end of the origin device".to_string(),
-                ));
-            }
+
             let mut seen_oblocks = self.seen_oblocks.lock().unwrap();
 
             if m.oblock as usize >= seen_oblocks.len() {
@@ -121,7 +114,6 @@ mod format2 {
     use super::*;
 
     pub struct MappingChecker {
-        nr_origin_blocks: u64,
         inner: Mutex<Inner>,
     }
 
@@ -134,7 +126,6 @@ mod format2 {
         pub fn new(nr_origin_blocks: Option<u64>, dirty_bits: CheckedBitSet) -> MappingChecker {
             if let Some(n) = nr_origin_blocks {
                 MappingChecker {
-                    nr_origin_blocks: n,
                     inner: Mutex::new(Inner {
                         seen_oblocks: FixedBitSet::with_capacity(n as usize),
                         dirty_bits,
@@ -142,7 +133,6 @@ mod format2 {
                 }
             } else {
                 MappingChecker {
-                    nr_origin_blocks: MAX_ORIGIN_BLOCKS,
                     inner: Mutex::new(Inner {
                         seen_oblocks: FixedBitSet::with_capacity(DEFAULT_OBLOCKS),
                         dirty_bits,
@@ -172,11 +162,6 @@ mod format2 {
                     return Err(array::value_err("invalid mapped block".to_string()));
                 }
                 return Ok(());
-            }
-            if m.oblock >= self.nr_origin_blocks {
-                return Err(array::value_err(
-                    "mapping beyond end of the origin device".to_string(),
-                ));
             }
 
             if m.oblock as usize >= seen_oblocks.len() {
