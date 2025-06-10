@@ -1460,13 +1460,15 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
     let data_sm_on_disk_future = {
         let engine = ctx.engine.clone();
         let metadata_sm = metadata_sm.clone();
+        let report = ctx.report.clone();
 
         spawn_future(move || -> Result<Aggregator, Error> {
+            report.debug("start reading data sm");
             let start = std::time::Instant::now();
             let data_sm_on_disk =
                 read_data_space_map(engine, data_root, opts.ignore_non_fatal, metadata_sm)?;
             let duration = start.elapsed();
-            eprintln!("reading data sm: {:?}", duration);
+            report.debug(&format!("reading data sm: {:?}", duration));
             Ok(data_sm_on_disk)
         })
     };
@@ -1477,13 +1479,15 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
     let _metadata_sm_on_disk_future = {
         let engine = ctx.engine.clone();
         let metadata_sm = metadata_sm.clone();
+        let report = ctx.report.clone();
 
         spawn_future(move || -> Result<Aggregator, Error> {
+            report.debug("start reading metadata sm");
             let start = std::time::Instant::now();
             let metadata_sm_on_disk =
                 read_metadata_space_map(engine, metadata_root, opts.ignore_non_fatal, metadata_sm)?;
             let duration = start.elapsed();
-            eprintln!("reading metadata sm: {:?}", duration);
+            report.debug(&format!("reading metadata sm: {:?}", duration));
             Ok(metadata_sm_on_disk)
         })
     };
