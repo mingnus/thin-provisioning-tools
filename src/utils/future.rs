@@ -27,6 +27,8 @@ use std::thread;
 /// # Examples
 ///
 /// ```
+/// use thinp::utils::future::spawn_future;
+///
 /// let future = spawn_future(|| {
 ///     // Some expensive computation
 ///     std::thread::sleep(std::time::Duration::from_secs(2));

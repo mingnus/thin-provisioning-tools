@@ -202,6 +202,8 @@ impl Region {
     /// # Examples
     ///
     /// ```
+    /// use thinp::pdata::space_map::aggregator::Aggregator;
+    ///
     /// let aggregator = Aggregator::new(1000);
     /// // ... (assume some increments have been performed)
     ///
@@ -321,7 +323,7 @@ impl Region {
 /// # Examples
 ///
 /// ```rust
-/// use your_crate::Aggregator;
+/// use thinp::pdata::space_map::aggregator::Aggregator;
 ///
 /// // Initialize an aggregator with 1024 entries
 /// let aggregator = Aggregator::new(1024);
@@ -360,7 +362,7 @@ impl Aggregator {
     /// # Examples
     ///
     /// ```rust
-    /// use your_crate::Aggregator;
+    /// use thinp::pdata::space_map::aggregator::Aggregator;
     ///
     /// let aggregator = Aggregator::new(1024);
     /// ```
@@ -391,7 +393,7 @@ impl Aggregator {
     /// # Examples
     ///
     /// ```rust
-    /// use your_crate::Aggregator;
+    /// use thinp::pdata::space_map::aggregator::Aggregator;
     ///
     /// let aggregator = Aggregator::new(1024);
     /// let mut blocks = vec![5, 2, 3, 1, 4];
