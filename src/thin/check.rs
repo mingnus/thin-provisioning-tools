@@ -405,8 +405,7 @@ impl<'a> ReadHandler for LayerHandler<'a> {
                     let info = InternalNodeInfo { keys, children };
                     let _ = self.push_internal(loc as u32, info);
 
-                    let values_to_check: Vec<u64> = values.iter().map(|&v| v).collect();
-                    let seen = self.aggregator.test_and_inc(&values_to_check);
+                    let seen = self.aggregator.test_and_inc(&values);
 
                     for (i, v) in values.iter().enumerate() {
                         if !seen.contains(i) {
