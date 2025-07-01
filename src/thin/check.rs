@@ -55,11 +55,10 @@ fn print_mem(msg: &str) {
 // minimum number of entries of a node with 64-bit mapped type
 const MIN_ENTRIES: u8 = 84;
 
-fn inc_superblock(sm: &ASpaceMap, metadata_snap: u64) -> Result<()> {
-    let mut sm = sm.lock().unwrap();
-    sm.inc(SUPERBLOCK_LOCATION, 1)?;
+fn inc_superblock(sm: &Aggregator, metadata_snap: u64) -> Result<()> {
+    sm.inc_single(SUPERBLOCK_LOCATION);
     if metadata_snap > 0 {
-        sm.inc(metadata_snap, 1)?;
+        sm.inc_single(metadata_snap);
     }
     Ok(())
 }
@@ -1184,7 +1183,7 @@ fn create_metadata_sm(
 fn get_devices_(
     engine: &Arc<dyn IoEngine + Send + Sync>,
     sb: &Superblock,
-    metadata_sm: &ASpaceMap,
+    metadata_sm: &Aggregator,
     ignore_non_fatal: bool,
 ) -> Result<(BTreeMap<u64, DeviceDetail>, BTreeMap<u64, u64>)> {
     let mut path = vec![0];
@@ -1215,7 +1214,7 @@ fn get_devices_(
 fn get_thins_from_superblock(
     engine: &Arc<dyn IoEngine + Send + Sync>,
     sb: &Superblock,
-    metadata_sm: &ASpaceMap,
+    metadata_sm: &Aggregator,
     all_roots: &mut Vec<u64>,
     ignore_non_fatal: bool,
 ) -> Result<BTreeMap<u64, (u64, DeviceDetail)>> {
@@ -1247,7 +1246,7 @@ fn get_thins_from_superblock(
 fn get_thins_from_metadata_snap(
     engine: &Arc<dyn IoEngine + Send + Sync>,
     sb_snap: &Superblock,
-    metadata_sm: &ASpaceMap,
+    metadata_sm: &Aggregator,
     thins: &BTreeMap<u64, (u64, DeviceDetail)>,
     all_roots: &mut Vec<u64>,
     ignore_non_fatal: bool,
@@ -1306,7 +1305,7 @@ fn get_thins_from_metadata_snap(
 fn check_mappings_bottom_level(
     ctx: &Context,
     // sb: &Superblock,
-    metadata_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
+    metadata_sm: &Aggregator,
     data_sm: &Arc<Aggregator>,
     roots: &[u64],
     ignore_non_fatal: bool,
@@ -1394,8 +1393,8 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
 
     report.set_title("Checking thin metadata");
 
-    let metadata_sm_agg = Arc::new(Mutex::new(Aggregator::new(engine.get_nr_blocks() as usize)));
-    let metadata_sm: ASpaceMap = metadata_sm_agg.clone();
+    let metadata_sm_agg = Arc::new(Aggregator::new(engine.get_nr_blocks() as usize));
+    //let metadata_sm: ASpaceMap = metadata_sm_agg.clone();
 
     /*
     let metadata_sm = if opts.engine_opts.use_metadata_snap {
@@ -1405,7 +1404,7 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
     };
     */
 
-    inc_superblock(&metadata_sm, sb.metadata_snap)?;
+    inc_superblock(&metadata_sm_agg, sb.metadata_snap)?;
 
     //------------------------------------
     // Check device details and the top-level tree
@@ -1421,7 +1420,7 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
         get_thins_from_superblock(
             engine,
             &sb,
-            &metadata_sm,
+            &metadata_sm_agg,
             &mut all_roots,
             opts.ignore_non_fatal,
         )?
@@ -1475,7 +1474,7 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
     //-----------------------------------------
     // Kick off reading the metadata space map
     let metadata_root = unpack::<SMRoot>(&sb.metadata_sm_root[0..])?;
-    let _metadata_sm_on_disk_future = {
+    let metadata_sm_on_disk_future = {
         let engine = ctx.engine.clone();
         let metadata_sm = metadata_sm.clone();
         let report = ctx.report.clone();
@@ -1510,7 +1509,7 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
 
     let summaries = check_mappings_bottom_level(
         &ctx,
-        &metadata_sm,
+        &metadata_sm_agg,
         &data_sm,
         &all_roots,
         opts.ignore_non_fatal,
@@ -1682,8 +1681,9 @@ pub fn check_with_maps(
     report.set_title("Checking thin metadata");
 
     let sb = read_superblock(engine.as_ref(), SUPERBLOCK_LOCATION)?;
-    let metadata_sm = create_metadata_sm(&engine, &sb, &None, false)?;
-    inc_superblock(&metadata_sm, sb.metadata_snap)?;
+    let metadata_sm_agg = Arc::new(Mutex::new(Aggregator::new(engine.get_nr_blocks() as usize)));
+    let metadata_sm: ASpaceMap = metadata_sm_agg.clone();
+    inc_superblock(&metadata_sm_agg, sb.metadata_snap)?;
 
     //-----------------------------------------
 
