@@ -46,6 +46,7 @@ pub fn engine_args(cmd: clap::Command) -> clap::Command {
             .help("Select an io engine to use")
             .long("io-engine")
             .value_name("IO_ENGINE")
+            .default_value("async")
             .hide(true),
     )
 }
