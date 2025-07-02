@@ -3,6 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use crate::io_engine::*;
 use crate::pdata::btree::*;
+//use crate::pdata::space_map::aggregator::Aggregator;
 use crate::pdata::space_map::*;
 use crate::pdata::unpack::*;
 
@@ -341,6 +342,20 @@ pub fn btree_to_map_with_sm<V: Unpack + Copy>(
     walker.walk(path, &visitor, root)?;
     Ok(visitor.values.into_inner().unwrap())
 }
+
+/*pub fn btree_to_map_with_aggregator<V: Unpack + Copy>(
+    path: &mut Vec<u64>,
+    engine: Arc<dyn IoEngine + Send + Sync>,
+    sm: &Aggregator,
+    ignore_non_fatal: bool,
+    root: u64,
+) -> Result<BTreeMap<u64, V>> {
+    let walker = BTreeWalkerAgg::new(engine, sm, ignore_non_fatal)?;
+    let visitor = ValueCollector::<V>::new();
+
+    walker.walk(path, &visitor, root)?;
+    Ok(visitor.values.into_inner().unwrap())
+}*/
 
 //------------------------------------------
 
