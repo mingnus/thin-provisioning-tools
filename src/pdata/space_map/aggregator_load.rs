@@ -201,8 +201,11 @@ pub fn read_space_map(
 
     let mut index_handler = IndexHandler::new(loc_to_index, &aggregator);
 
+    let start = std::time::Instant::now();
     // FIXME: is the cloned() expensive?
     engine.read_blocks(&mut pool, &mut blocks.iter().cloned(), &mut index_handler)?;
+    let duration = start.elapsed();
+    eprintln!("reading bitmap blocks {:?}" , duration);
 
     // Now, handle the overflow entries in the ref count tree
     struct OverflowVisitor<'a> {
@@ -235,11 +238,14 @@ pub fn read_space_map(
         }
     }
 
+    let start = std::time::Instant::now();
     let visitor = OverflowVisitor {
         aggregator: &aggregator,
     };
     let walker = BTreeWalker::new(engine, ignore_non_fatal);
     walker.walk(&mut vec![0], &visitor, root.ref_count_root)?;
+    let duration = start.elapsed();
+    eprintln!("reading ref counts tree {:?}" , duration);
 
     Ok(aggregator)
 }
