@@ -7,10 +7,11 @@ use crate::io_engine::buffer_pool::*;
 use crate::io_engine::{IoEngine, ReadHandler, BLOCK_SIZE};
 use crate::pdata::btree::{self, *};
 use crate::pdata::btree_walker::*;
+use crate::pdata::btree_layer_walker::*;
 use crate::pdata::space_map::aggregator::*;
 use crate::pdata::space_map::common::*;
 use crate::pdata::space_map::metadata::*;
-use crate::pdata::space_map::*;
+//use crate::pdata::space_map::*;
 use crate::pdata::unpack::*;
 
 //------------------------------------------
@@ -24,10 +25,9 @@ use SmType::*;
 
 //------------------------------------------
 
-fn inc_entries(sm: &ASpaceMap, entries: &[IndexEntry]) -> Result<()> {
-    let mut sm = sm.lock().unwrap();
+fn inc_entries(sm: &Aggregator, entries: &[IndexEntry]) -> Result<()> {
     for ie in entries {
-        sm.inc(ie.blocknr, 1)?;
+        sm.inc_single(ie.blocknr);
     }
     Ok(())
 }
@@ -35,19 +35,19 @@ fn inc_entries(sm: &ASpaceMap, entries: &[IndexEntry]) -> Result<()> {
 fn gather_data_index_entries(
     engine: Arc<dyn IoEngine + Send + Sync>,
     bitmap_root: u64,
-    metadata_sm: ASpaceMap,
+    metadata_sm_agg: &Aggregator,
     ignore_non_fatal: bool,
 ) -> Result<Vec<IndexEntry>> {
-    let entries_map = btree_to_map_with_sm::<IndexEntry>(
-        &mut vec![0],
+
+    let entries_map = btree_to_map_with_aggregator::<IndexEntry>(
         engine,
-        metadata_sm.clone(),
-        ignore_non_fatal,
+        metadata_sm_agg,
         bitmap_root,
+        ignore_non_fatal,
     )?;
 
     let entries: Vec<IndexEntry> = entries_map.values().cloned().collect();
-    inc_entries(&metadata_sm, &entries[0..])?;
+    inc_entries(metadata_sm_agg, &entries[0..])?;
 
     Ok(entries)
 }
@@ -56,12 +56,12 @@ fn gather_metadata_index_entries(
     engine: Arc<dyn IoEngine + Send + Sync>,
     bitmap_root: u64,
     nr_blocks: u64,
-    metadata_sm: ASpaceMap,
+    metadata_sm_agg: &Aggregator,
 ) -> Result<Vec<IndexEntry>> {
     let b = engine.read(bitmap_root)?;
     let entries = load_metadata_index(&b, nr_blocks)?.indexes;
-    metadata_sm.lock().unwrap().inc(bitmap_root, 1)?;
-    inc_entries(&metadata_sm, &entries[0..])?;
+    metadata_sm_agg.inc_single(bitmap_root);
+    inc_entries(&metadata_sm_agg, &entries[0..])?;
 
     Ok(entries)
 }
@@ -161,11 +161,11 @@ pub fn read_space_map(
     engine: Arc<dyn IoEngine + Send + Sync>,
     root: SMRoot,
     ignore_non_fatal: bool,
-    metadata_sm: ASpaceMap,
+    metadata_sm_agg: &Aggregator,
     kind: SmType,
 ) -> Result<Aggregator> {
     let nr_blocks = root.nr_blocks as usize;
-    let aggregator = Aggregator::new(nr_blocks);
+    let aggregator = Arc::new(Aggregator::new(nr_blocks));
 
     // First, load the bitmap data
     let entries = {
@@ -173,14 +173,14 @@ pub fn read_space_map(
             DataSm => gather_data_index_entries(
                 engine.clone(),
                 root.bitmap_root,
-                metadata_sm,
+                metadata_sm_agg,
                 ignore_non_fatal,
             )?,
             MetadataSm => gather_metadata_index_entries(
                 engine.clone(),
                 root.bitmap_root,
                 root.nr_blocks,
-                metadata_sm,
+                metadata_sm_agg,
             )?,
         }
     };
@@ -208,11 +208,11 @@ pub fn read_space_map(
     eprintln!("reading bitmap blocks {:?}" , duration);
 
     // Now, handle the overflow entries in the ref count tree
-    struct OverflowVisitor<'a> {
-        aggregator: &'a Aggregator,
+    struct OverflowVisitor {
+        aggregator: Arc<Aggregator>,
     }
 
-    impl<'a> NodeVisitor<u32> for OverflowVisitor<'a> {
+    impl NodeVisitor<u32> for OverflowVisitor {
         fn visit(
             &self,
             _path: &[u64],
@@ -236,33 +236,37 @@ pub fn read_space_map(
     }
 
     let start = std::time::Instant::now();
-    let visitor = OverflowVisitor {
-        aggregator: &aggregator,
-    };
-    let walker = BTreeWalker::new(engine, ignore_non_fatal);
-    walker.walk(&mut vec![0], &visitor, root.ref_count_root)?;
+
+    let visitor = Arc::new(OverflowVisitor {
+        aggregator: aggregator.clone(),
+    });
+    let buffer_size = 16 * 1024 * 1024;
+    let nr_io_blocks = buffer_size / BLOCK_SIZE;
+    let mut pool = BufferPool::new(nr_io_blocks, BLOCK_SIZE);
+    read_nodes(engine, visitor, &mut pool, metadata_sm_agg, root.ref_count_root, ignore_non_fatal)?;
+
     let duration = start.elapsed();
     eprintln!("reading ref counts tree {:?}" , duration);
 
-    Ok(aggregator)
+    Ok(Arc::try_unwrap(aggregator).unwrap())
 }
 
 pub fn read_data_space_map(
     engine: Arc<dyn IoEngine + Send + Sync>,
     root: SMRoot,
     ignore_non_fatal: bool,
-    metadata_sm: ASpaceMap,
+    metadata_sm_agg: &Aggregator,
 ) -> Result<Aggregator> {
-    read_space_map(engine, root, ignore_non_fatal, metadata_sm, DataSm)
+    read_space_map(engine, root, ignore_non_fatal, metadata_sm_agg, DataSm)
 }
 
 pub fn read_metadata_space_map(
     engine: Arc<dyn IoEngine + Send + Sync>,
     root: SMRoot,
     ignore_non_fatal: bool,
-    metadata_sm: ASpaceMap,
+    metadata_sm_agg: &Aggregator,
 ) -> Result<Aggregator> {
-    read_space_map(engine, root, ignore_non_fatal, metadata_sm, MetadataSm)
+    read_space_map(engine, root, ignore_non_fatal, metadata_sm_agg, MetadataSm)
 }
 
 //------------------------------------------

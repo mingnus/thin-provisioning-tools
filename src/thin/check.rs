@@ -14,6 +14,7 @@ use crate::io_engine::buffer_pool::BufferPool;
 use crate::io_engine::*;
 use crate::pdata::btree::*;
 use crate::pdata::btree_walker::*;
+use crate::pdata::btree_layer_walker::*;
 use crate::pdata::space_map::aggregator::*;
 use crate::pdata::space_map::aggregator_load::*;
 use crate::pdata::space_map::checker::*;
@@ -620,7 +621,7 @@ fn summarize_tree(
 // Check the mappings filling in the data_sm as we go.
 fn check_mappings_bottom_level_(
     ctx: &Context,
-    metadata_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
+    metadata_sm: &Aggregator,
     data_sm: &Arc<Aggregator>,
     roots: &[u64],
     ignore_non_fatal: bool,
@@ -628,8 +629,7 @@ fn check_mappings_bottom_level_(
     let report = &ctx.report;
 
     let start = std::time::Instant::now();
-    let aggregator = Aggregator::new(metadata_sm.lock().unwrap().get_nr_blocks().unwrap() as usize);
-    let nodes = collect_nodes_in_use(ctx, &aggregator, roots, ignore_non_fatal)?;
+    let nodes = collect_nodes_in_use(ctx, metadata_sm, roots, ignore_non_fatal)?;
     let duration = start.elapsed();
     eprintln!("reading internal nodes: {:?}", duration);
 
@@ -1189,22 +1189,20 @@ fn get_devices_(
     let mut path = vec![0];
 
     // Reread device details to increment the ref counts for that metadata.
-    let devs = btree_to_map_with_sm::<DeviceDetail>(
-        &mut path,
+    let devs = btree_to_map_with_aggregator::<DeviceDetail>(
         engine.clone(),
         metadata_sm.clone(),
-        ignore_non_fatal,
         sb.details_root,
+        ignore_non_fatal,
     )
     .map_err(|e| metadata_err("device details tree", e.into()))?;
 
     // Mapping top level
-    let roots = btree_to_map_with_sm::<u64>(
-        &mut path,
+    let roots = btree_to_map_with_aggregator::<u64>(
         engine.clone(),
         metadata_sm.clone(),
-        ignore_non_fatal,
         sb.mapping_root,
+        ignore_non_fatal,
     )
     .map_err(|e| metadata_err("mapping top-level", e.into()))?;
 
@@ -1435,7 +1433,7 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
         Some(Ok(ref sbs)) => get_thins_from_metadata_snap(
             engine,
             sbs,
-            &metadata_sm,
+            &metadata_sm_agg,
             &thins,
             &mut all_roots,
             opts.ignore_non_fatal,
@@ -1457,14 +1455,14 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
     let data_root = unpack::<SMRoot>(&sb.data_sm_root[0..])?;
     let data_sm_on_disk_future = {
         let engine = ctx.engine.clone();
-        let metadata_sm = metadata_sm.clone();
+        let metadata_sm_agg = metadata_sm_agg.clone();
         let report = ctx.report.clone();
 
         spawn_future(move || -> Result<Aggregator, Error> {
             report.debug("start reading data sm");
             let start = std::time::Instant::now();
             let data_sm_on_disk =
-                read_data_space_map(engine, data_root, opts.ignore_non_fatal, metadata_sm)?;
+                read_data_space_map(engine, data_root, opts.ignore_non_fatal, &metadata_sm_agg)?;
             let duration = start.elapsed();
             report.debug(&format!("reading data sm: {:?}", duration));
             Ok(data_sm_on_disk)
@@ -1476,14 +1474,14 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
     let metadata_root = unpack::<SMRoot>(&sb.metadata_sm_root[0..])?;
     let metadata_sm_on_disk_future = {
         let engine = ctx.engine.clone();
-        let metadata_sm = metadata_sm.clone();
+        let metadata_sm_agg = metadata_sm_agg.clone();
         let report = ctx.report.clone();
 
         spawn_future(move || -> Result<Aggregator, Error> {
             report.debug("start reading metadata sm");
             let start = std::time::Instant::now();
             let metadata_sm_on_disk =
-                read_metadata_space_map(engine, metadata_root, opts.ignore_non_fatal, metadata_sm)?;
+                read_metadata_space_map(engine, metadata_root, opts.ignore_non_fatal, &metadata_sm_agg)?;
             let duration = start.elapsed();
             report.debug(&format!("reading metadata sm: {:?}", duration));
             Ok(metadata_sm_on_disk)
@@ -1561,7 +1559,7 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
     // Compare the metadata space maps
     match metadata_sm_on_disk_future() {
         Ok(metadata_sm_on_disk) => {
-            let metadata_sm_agg = metadata_sm_agg.lock().unwrap();
+            //let metadata_sm_agg = metadata_sm_agg.lock().unwrap();
             metadata_sm_agg.diff(
                 &metadata_sm_on_disk,
                 |block: u64, l_count: u32, r_count: u32| {
@@ -1669,7 +1667,7 @@ pub fn clear_needs_check_flag(engine: Arc<dyn IoEngine + Send + Sync>) -> Result
 
 // Some callers wish to know which blocks are allocated.
 pub struct CheckMaps {
-    pub metadata_sm: Arc<Mutex<dyn SpaceMap + Send + Sync>>,
+    pub metadata_sm: Arc<Aggregator>,
     pub data_sm: Arc<Aggregator>,
 }
 
@@ -1681,8 +1679,8 @@ pub fn check_with_maps(
     report.set_title("Checking thin metadata");
 
     let sb = read_superblock(engine.as_ref(), SUPERBLOCK_LOCATION)?;
-    let metadata_sm_agg = Arc::new(Mutex::new(Aggregator::new(engine.get_nr_blocks() as usize)));
-    let metadata_sm: ASpaceMap = metadata_sm_agg.clone();
+    let metadata_sm_agg = Arc::new(Aggregator::new(engine.get_nr_blocks() as usize));
+    //let metadata_sm: ASpaceMap = metadata_sm_agg.clone();
     inc_superblock(&metadata_sm_agg, sb.metadata_snap)?;
 
     //-----------------------------------------
@@ -1690,14 +1688,14 @@ pub fn check_with_maps(
     report.set_sub_title("device details tree");
 
     let mut all_roots = Vec::<u64>::new();
-    let thins = get_thins_from_superblock(&engine, &sb, &metadata_sm, &mut all_roots, false)?;
+    let thins = get_thins_from_superblock(&engine, &sb, &metadata_sm_agg, &mut all_roots, false)?;
 
     //-----------------------------------------
 
     report.set_sub_title("mapping tree");
 
     let data_sm = create_data_sm(&sb)?;
-    let summaries = check_mappings_bottom_level_(&ctx, &metadata_sm, &data_sm, &all_roots, false)?;
+    let summaries = check_mappings_bottom_level_(&ctx, &metadata_sm_agg, &data_sm, &all_roots, false)?;
 
     // Check the number of mapped blocks
     let mut iter = thins
@@ -1725,14 +1723,15 @@ pub fn check_with_maps(
     report.set_sub_title("metadata space map");
     let root = unpack::<SMRoot>(&sb.metadata_sm_root[0..])?;
 
+    // TODO: compare in-core Aggregators
     // Now the counts should be correct and we can check it.
-    let _metadata_leaks =
-        check_metadata_space_map(engine.clone(), report, root, metadata_sm.clone(), false)?;
+    //let _metadata_leaks =
+    //    check_metadata_space_map(engine.clone(), report, root, metadata_sm.clone(), false)?;
 
     //-----------------------------------------
 
     Ok(CheckMaps {
-        metadata_sm: metadata_sm.clone(),
+        metadata_sm: metadata_sm_agg.clone(),
         data_sm: data_sm.clone(),
     })
 }

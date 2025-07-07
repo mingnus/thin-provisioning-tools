@@ -8,6 +8,7 @@ use crate::pdata::space_map::base::*;
 
 const REGION_SIZE: usize = 1024;
 
+#[derive(Debug)]
 enum Rep {
     NoCounts,
     Bits(FixedBitSet),
@@ -38,6 +39,7 @@ impl Rep {
     }
 }
 
+#[derive(Debug)]
 struct Region {
     rep: Rep,
 }
@@ -342,6 +344,7 @@ impl Region {
 ///
 /// - **Batch Processing:** Aggregating increments in larger batches can improve
 ///   cache locality and reduce synchronization costs.
+#[derive(Debug)]
 pub struct Aggregator {
     nr_entries: usize,
     regions: Vec<Mutex<Region>>,
