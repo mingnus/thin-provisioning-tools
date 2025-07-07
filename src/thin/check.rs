@@ -1485,7 +1485,7 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
     //-----------------------------------------
     // Kick off reading the metadata space map
     let metadata_root = unpack::<SMRoot>(&sb.metadata_sm_root[0..])?;
-    let _metadata_sm_on_disk_future = {
+    let metadata_sm_on_disk_future = {
         let engine = ctx.engine.clone();
         let metadata_sm = metadata_sm.clone();
         let report = ctx.report.clone();
@@ -1567,7 +1567,6 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
         }
     }
 
-    /*
     //-----------------------------------------
     // Compare the metadata space maps
     match metadata_sm_on_disk_future() {
@@ -1588,7 +1587,6 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
             todo!();
         }
     }
-    */
 
     /*
     //-----------------------------------------
