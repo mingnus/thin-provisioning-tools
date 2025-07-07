@@ -316,28 +316,32 @@ impl BatchedNodeMap {
 
 //--------------------------------
 
-struct LayerHandler<'a> {
+struct LayerHandler {
     is_root: bool,
-    aggregator: &'a Aggregator,
+    aggregator: Arc<Mutex<Aggregator>>,
     ignore_non_fatal: bool,
     nodes: Arc<BatchedNodeMap>,
     children: FixedBitSet,
     updates: Vec<NodeUpdate>,
 }
 
-impl<'a> LayerHandler<'a> {
+impl LayerHandler {
     fn new(
         is_root: bool,
-        aggregator: &'a Aggregator,
+        aggregator: Arc<Mutex<Aggregator>>,
         ignore_non_fatal: bool,
         nodes: Arc<BatchedNodeMap>,
     ) -> Self {
+        let nr_blocks = {
+            let agg = aggregator.lock().unwrap();
+            agg.get_nr_blocks()
+        };
         Self {
             is_root,
             aggregator,
             ignore_non_fatal,
             nodes,
-            children: FixedBitSet::with_capacity(aggregator.get_nr_blocks()),
+            children: FixedBitSet::with_capacity(nr_blocks),
             updates: Vec::new(),
         }
     }
@@ -375,7 +379,7 @@ impl<'a> LayerHandler<'a> {
     }
 }
 
-impl<'a> ReadHandler for LayerHandler<'a> {
+impl ReadHandler for LayerHandler {
     fn handle(&mut self, loc: u64, data: std::io::Result<&[u8]>) {
         self.maybe_flush();
 
@@ -405,7 +409,10 @@ impl<'a> ReadHandler for LayerHandler<'a> {
                     let info = InternalNodeInfo { keys, children };
                     let _ = self.push_internal(loc as u32, info);
 
-                    let seen = self.aggregator.test_and_inc(&values);
+                    let seen = {
+                        let agg = self.aggregator.lock().unwrap();
+                        agg.test_and_inc(&values)
+                    };
 
                     for (i, v) in values.iter().enumerate() {
                         if !seen.contains(i) {
@@ -461,12 +468,15 @@ fn get_depth(ctx: &Context, path: &mut Vec<u64>, root: u64, is_root: bool) -> Re
 fn read_internal_nodes(
     ctx: &Context,
     io_buffers: &mut BufferPool,
-    aggregator: &Aggregator,
+    aggregator: &Arc<Mutex<Aggregator>>,
     root: u32,
     ignore_non_fatal: bool,
     nodes: Arc<BatchedNodeMap>,
 ) -> Result<()> {
-    let seen = aggregator.test_and_inc(&[root as u64]);
+    let seen = {
+        let agg = aggregator.lock().unwrap();
+        agg.test_and_inc(&[root as u64])
+    };
     if seen.contains(0) {
         return Ok(());
     }
@@ -482,7 +492,7 @@ fn read_internal_nodes(
         return Ok(());
     }
 
-    let nr_blocks = aggregator.get_nr_blocks();
+    let nr_blocks = aggregator.lock().unwrap().get_nr_blocks();
     let mut current_layer = FixedBitSet::with_capacity(nr_blocks as usize);
 
     current_layer.insert(root as usize);
@@ -490,7 +500,7 @@ fn read_internal_nodes(
     // Read the internal nodes, layer by layer.
     let mut is_root = true;
     for _d in (0..depth).rev() {
-        let mut handler = LayerHandler::new(is_root, aggregator, ignore_non_fatal, nodes.clone());
+        let mut handler = LayerHandler::new(is_root, aggregator.clone(), ignore_non_fatal, nodes.clone());
         is_root = false;
 
         ctx.engine.read_blocks(
@@ -621,7 +631,7 @@ fn summarize_tree(
 // Check the mappings filling in the data_sm as we go.
 fn check_mappings_bottom_level_(
     ctx: &Context,
-    metadata_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
+    metadata_sm_agg: &Arc<Mutex<Aggregator>>,
     data_sm: &Arc<Aggregator>,
     roots: &[u64],
     ignore_non_fatal: bool,
@@ -629,8 +639,8 @@ fn check_mappings_bottom_level_(
     let report = &ctx.report;
 
     let start = std::time::Instant::now();
-    let aggregator = Aggregator::new(metadata_sm.lock().unwrap().get_nr_blocks().unwrap() as usize);
-    let nodes = collect_nodes_in_use(ctx, &aggregator, roots, ignore_non_fatal)?;
+    //let aggregator = Aggregator::new(metadata_sm.lock().unwrap().get_nr_blocks().unwrap() as usize);
+    let nodes = collect_nodes_in_use(ctx, metadata_sm_agg, roots, ignore_non_fatal)?;
     let duration = start.elapsed();
     eprintln!("reading internal nodes: {:?}", duration);
 
@@ -676,7 +686,7 @@ fn check_mappings_bottom_level_(
 
 fn collect_nodes_in_use(
     ctx: &Context,
-    aggregator: &Aggregator,
+    aggregator: &Arc<Mutex<Aggregator>>,
     roots: &[u64],
     ignore_non_fatal: bool,
 ) -> Result<NodeMap> {
@@ -1306,7 +1316,7 @@ fn get_thins_from_metadata_snap(
 fn check_mappings_bottom_level(
     ctx: &Context,
     // sb: &Superblock,
-    metadata_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
+    metadata_sm_agg: &Arc<Mutex<Aggregator>>,
     data_sm: &Arc<Aggregator>,
     roots: &[u64],
     ignore_non_fatal: bool,
@@ -1330,7 +1340,7 @@ fn check_mappings_bottom_level(
     */
 
     let summaries =
-        check_mappings_bottom_level_(ctx, metadata_sm, data_sm, roots, ignore_non_fatal);
+        check_mappings_bottom_level_(ctx, metadata_sm_agg, data_sm, roots, ignore_non_fatal);
 
     // monitor.stop();
 
@@ -1510,7 +1520,7 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
 
     let summaries = check_mappings_bottom_level(
         &ctx,
-        &metadata_sm,
+        &metadata_sm_agg,
         &data_sm,
         &all_roots,
         opts.ignore_non_fatal,
@@ -1697,7 +1707,8 @@ pub fn check_with_maps(
     report.set_sub_title("mapping tree");
 
     let data_sm = create_data_sm(&sb)?;
-    let summaries = check_mappings_bottom_level_(&ctx, &metadata_sm, &data_sm, &all_roots, false)?;
+    let summaries = HashVec::default(); // TODO: finish
+    //let summaries = check_mappings_bottom_level_(&ctx, &metadata_sm, &data_sm, &all_roots, false)?;
 
     // Check the number of mapped blocks
     let mut iter = thins

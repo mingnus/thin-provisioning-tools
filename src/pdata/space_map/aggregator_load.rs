@@ -173,14 +173,14 @@ pub fn read_space_map(
             DataSm => gather_data_index_entries(
                 engine.clone(),
                 root.bitmap_root,
-                metadata_sm,
+                metadata_sm.clone(),
                 ignore_non_fatal,
             )?,
             MetadataSm => gather_metadata_index_entries(
                 engine.clone(),
                 root.bitmap_root,
                 root.nr_blocks,
-                metadata_sm,
+                metadata_sm.clone(),
             )?,
         }
     };
@@ -239,7 +239,7 @@ pub fn read_space_map(
     let visitor = OverflowVisitor {
         aggregator: &aggregator,
     };
-    let walker = BTreeWalker::new(engine, ignore_non_fatal);
+    let walker = BTreeWalker::new_with_sm(engine, metadata_sm, ignore_non_fatal)?;
     walker.walk(&mut vec![0], &visitor, root.ref_count_root)?;
     let duration = start.elapsed();
     eprintln!("reading ref counts tree {:?}" , duration);
