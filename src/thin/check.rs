@@ -1554,7 +1554,6 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
         }
     }
 
-    /*
     //-----------------------------------------
     // Compare the metadata space maps
     match metadata_sm_on_disk_future() {
@@ -1575,7 +1574,6 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
             todo!();
         }
     }
-    */
 
     /*
     //-----------------------------------------
