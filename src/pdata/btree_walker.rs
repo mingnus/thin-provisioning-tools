@@ -278,12 +278,12 @@ impl BTreeWalker {
 
 //------------------------------------------
 
-struct ValueCollector<V> {
-    values: Mutex<BTreeMap<u64, V>>,
+pub struct ValueCollector<V> {
+    pub values: Mutex<BTreeMap<u64, V>>,
 }
 
 impl<V> ValueCollector<V> {
-    fn new() -> ValueCollector<V> {
+    pub fn new() -> ValueCollector<V> {
         ValueCollector {
             values: Mutex::new(BTreeMap::new()),
         }
