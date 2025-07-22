@@ -1672,14 +1672,12 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
         }
     }
 
-    /*
     if opts.auto_repair || opts.clear_needs_check {
         let cleared = clear_needs_check_flag(engine.clone())?;
         if cleared {
             report.warning("Cleared needs_check flag");
         }
     }
-    */
 
     Ok(())
 }
