@@ -15,6 +15,7 @@ use crate::pdata::btree::*;
 use crate::pdata::btree_layer_walker::*;
 use crate::pdata::space_map::aggregator::*;
 use crate::pdata::space_map::aggregator_load::*;
+use crate::pdata::space_map::aggregator_repair::*;
 use crate::pdata::space_map::common::*;
 use crate::pdata::unpack::*;
 use crate::report::*;
@@ -1343,13 +1344,13 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
         let metadata_sm = metadata_sm.clone();
         let report = ctx.report.clone();
 
-        spawn_future(move || -> Result<Aggregator, Error> {
+        spawn_future(move || -> Result<(Aggregator, Vec<IndexEntry>), Error> {
             let start = std::time::Instant::now();
-            let data_sm_on_disk =
+            let (data_sm_on_disk, data_entries_on_disk) =
                 read_data_space_map(engine, data_root, opts.ignore_non_fatal, &metadata_sm)?;
             let duration = start.elapsed();
             report.debug(&format!("reading data sm: {:?}", duration));
-            Ok(data_sm_on_disk)
+            Ok((data_sm_on_disk, data_entries_on_disk))
         })
     };
 
@@ -1361,13 +1362,13 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
         let metadata_sm = metadata_sm.clone();
         let report = ctx.report.clone();
 
-        spawn_future(move || -> Result<Aggregator, Error> {
+        spawn_future(move || -> Result<(Aggregator, Vec<IndexEntry>), Error> {
             let start = std::time::Instant::now();
-            let metadata_sm_on_disk =
+            let (metadata_sm_on_disk, metadata_entries_on_disk) =
                 read_metadata_space_map(engine, metadata_root, opts.ignore_non_fatal, &metadata_sm)?;
             let duration = start.elapsed();
             report.debug(&format!("reading metadata sm: {:?}", duration));
-            Ok(metadata_sm_on_disk)
+            Ok((metadata_sm_on_disk, metadata_entries_on_disk))
         })
     };
 
@@ -1422,11 +1423,28 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
 
     //-----------------------------------------
     // Compare the data space maps
+    let mut data_leaks = Vec::new();
+    let mut current_index = None;
+    let mut err = None;
+    let mut nr_leaks = 0;
     match data_sm_on_disk_future() {
-        Ok(data_sm_on_disk) => {
+        Ok((data_sm_on_disk, data_entries_on_disk)) => {
             data_sm.diff(
                 &data_sm_on_disk,
                 |block: u64, l_count: u32, r_count: u32| {
+                    let bitmap_index = block / ENTRIES_PER_BITMAP as u64;
+                    if l_count == 0 && r_count == 1 {
+                        if current_index != Some(bitmap_index) {
+                            data_leaks.push(BitmapLeak {
+                                loc: data_entries_on_disk[bitmap_index as usize].blocknr,
+                                blocknr: ENTRIES_PER_BITMAP as u64 * bitmap_index,
+                            });
+                            current_index = Some(bitmap_index);
+                        }
+                        nr_leaks += 1;
+                    } else {
+                        err = Some(anyhow!("bad reference counts"));
+                    }
                     report.debug(&format!(
                         "data count difference for block {}: {}, {}",
                         block, l_count, r_count
@@ -1434,18 +1452,41 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
                 },
             );
         }
-        Err(_e) => {
-            todo!()
+        Err(e) => {
+            err = Some(e);
         }
+    }
+    if nr_leaks > 0 {
+        report.non_fatal(&format!("{} data blocks have leaked", nr_leaks));
+    }
+    if err.is_some() {
+        return Err(metadata_err("data space map", err.unwrap()).into());
     }
 
     //-----------------------------------------
     // Compare the metadata space maps
+    let mut metadata_leaks = Vec::new();
+    let mut current_index = None;
+    let mut err = None;
+    let mut nr_leaks = 0;
     match metadata_sm_on_disk_future() {
-        Ok(metadata_sm_on_disk) => {
+        Ok((metadata_sm_on_disk, metadata_entries_on_disk)) => {
             metadata_sm.diff(
                 &metadata_sm_on_disk,
                 |block: u64, l_count: u32, r_count: u32| {
+                    let bitmap_index = block / ENTRIES_PER_BITMAP as u64;
+                    if l_count == 0 && r_count == 1 {
+                        if current_index != Some(bitmap_index) {
+                            metadata_leaks.push(BitmapLeak {
+                                loc: metadata_entries_on_disk[bitmap_index as usize].blocknr,
+                                blocknr: ENTRIES_PER_BITMAP as u64 * bitmap_index,
+                            });
+                            current_index = Some(bitmap_index);
+                        }
+                        nr_leaks += 1;
+                    } else {
+                        err = Some(anyhow!("bad reference counts"));
+                    }
                     report.debug(&format!(
                         "metadata count difference for block {}: {}, {}",
                         block, l_count, r_count
@@ -1453,19 +1494,24 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
                 },
             );
         }
-        Err(_e) => {
-            todo!();
+        Err(e) => {
+            err = Some(e);
         }
+    }
+    if nr_leaks > 0 {
+        report.non_fatal(&format!("{} metadata blocks have leaked", nr_leaks));
+    }
+    if err.is_some() {
+        return Err(metadata_err("metadata space map", err.unwrap()).into());
     }
 
     //-----------------------------------------
     // Fix minor issues found in the metadata
 
-    /*
     if !data_leaks.is_empty() {
         if opts.auto_repair || opts.clear_needs_check {
             report.warning("Repairing data leaks.");
-            repair_space_map(engine.clone(), data_leaks, data_sm.clone())?;
+            repair_space_map(engine.clone(), data_leaks, &data_sm)?;
         } else if !opts.ignore_non_fatal {
             return Err(anyhow!(concat!(
                 "data space map contains leaks\n",
@@ -1477,7 +1523,7 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
     if !metadata_leaks.is_empty() {
         if opts.auto_repair || opts.clear_needs_check {
             report.warning("Repairing metadata leaks.");
-            repair_space_map(engine.clone(), metadata_leaks, metadata_sm.clone())?;
+            repair_space_map(engine.clone(), metadata_leaks, &metadata_sm)?;
         } else if !opts.ignore_non_fatal {
             return Err(anyhow!(concat!(
                 "metadata space map contains leaks\n",
@@ -1486,6 +1532,7 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
         }
     }
 
+    /*
     if opts.auto_repair || opts.clear_needs_check {
         let cleared = clear_needs_check_flag(engine.clone())?;
         if cleared {
@@ -1542,7 +1589,7 @@ pub fn check_with_maps(
 
         spawn_future(move || -> Result<Aggregator, Error> {
             let start = std::time::Instant::now();
-            let data_sm_on_disk =
+            let (data_sm_on_disk, _) =
                 read_data_space_map(engine, data_root, false, &metadata_sm)?;
             let duration = start.elapsed();
             report.debug(&format!("reading data sm: {:?}", duration));
@@ -1560,7 +1607,7 @@ pub fn check_with_maps(
 
         spawn_future(move || -> Result<Aggregator, Error> {
             let start = std::time::Instant::now();
-            let metadata_sm_on_disk =
+            let (metadata_sm_on_disk, _) =
                 read_metadata_space_map(engine, metadata_root, false, &metadata_sm)?;
             let duration = start.elapsed();
             report.debug(&format!("reading metadata sm: {:?}", duration));
@@ -1583,11 +1630,13 @@ pub fn check_with_maps(
 
     //-----------------------------------------
     // Compare the data space maps
+    let mut err = None;
     match data_sm_on_disk_future() {
         Ok(data_sm_on_disk) => {
             data_sm.diff(
                 &data_sm_on_disk,
                 |block: u64, l_count: u32, r_count: u32| {
+                    err = Some(anyhow!("bad reference counts"));
                     report.debug(&format!(
                         "data count difference for block {}: {}, {}",
                         block, l_count, r_count
@@ -1595,9 +1644,12 @@ pub fn check_with_maps(
                 },
             );
         }
-        Err(_e) => {
-            todo!()
+        Err(e) => {
+            err = Some(e);
         }
+    }
+    if err.is_some() {
+        return Err(metadata_err("data space map", err.unwrap()).into());
     }
 
     //-----------------------------------------
@@ -1607,6 +1659,7 @@ pub fn check_with_maps(
             metadata_sm.diff(
                 &metadata_sm_on_disk,
                 |block: u64, l_count: u32, r_count: u32| {
+                    err = Some(anyhow!("bad reference counts"));
                     report.debug(&format!(
                         "metadata count difference for block {}: {}, {}",
                         block, l_count, r_count
@@ -1614,9 +1667,12 @@ pub fn check_with_maps(
                 },
             );
         }
-        Err(_e) => {
-            todo!();
+        Err(e) => {
+            err = Some(e);
         }
+    }
+    if err.is_some() {
+        return Err(metadata_err("metadata space map", err.unwrap()).into());
     }
 
     //-----------------------------------------

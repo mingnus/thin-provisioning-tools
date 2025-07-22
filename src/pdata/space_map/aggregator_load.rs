@@ -159,7 +159,7 @@ pub fn read_space_map(
     ignore_non_fatal: bool,
     metadata_sm: &Aggregator,
     kind: SmType,
-) -> Result<Aggregator> {
+) -> Result<(Aggregator, Vec<IndexEntry>)> {
     let nr_blocks = root.nr_blocks as usize;
     let aggregator = Arc::new(Aggregator::new(nr_blocks));
 
@@ -238,7 +238,7 @@ pub fn read_space_map(
         1,
     )?;
 
-    Ok(Arc::into_inner(aggregator).unwrap())
+    Ok((Arc::into_inner(aggregator).unwrap(), entries))
 }
 
 pub fn read_data_space_map(
@@ -246,7 +246,7 @@ pub fn read_data_space_map(
     root: SMRoot,
     ignore_non_fatal: bool,
     metadata_sm: &Aggregator,
-) -> Result<Aggregator> {
+) -> Result<(Aggregator, Vec<IndexEntry>)> {
     read_space_map(engine, root, ignore_non_fatal, metadata_sm, DataSm)
 }
 
@@ -255,7 +255,7 @@ pub fn read_metadata_space_map(
     root: SMRoot,
     ignore_non_fatal: bool,
     metadata_sm: &Aggregator,
-) -> Result<Aggregator> {
+) -> Result<(Aggregator, Vec<IndexEntry>)> {
     read_space_map(engine, root, ignore_non_fatal, metadata_sm, MetadataSm)
 }
 
