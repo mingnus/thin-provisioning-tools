@@ -1458,14 +1458,14 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
         let metadata_sm_agg = metadata_sm_agg.clone();
         let report = ctx.report.clone();
 
-        spawn_future(move || -> Result<Aggregator, Error> {
+        spawn_future(move || -> Result<(Aggregator, Vec<IndexEntry>), Error> {
             report.debug("start reading data sm");
             let start = std::time::Instant::now();
-            let data_sm_on_disk =
+            let (data_sm_on_disk, data_entries_on_disk) =
                 read_data_space_map(engine, data_root, opts.ignore_non_fatal, &metadata_sm_agg)?;
             let duration = start.elapsed();
             report.debug(&format!("reading data sm: {:?}", duration));
-            Ok(data_sm_on_disk)
+            Ok((data_sm_on_disk, data_entries_on_disk))
         })
     };
 
@@ -1477,14 +1477,14 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
         let metadata_sm_agg = metadata_sm_agg.clone();
         let report = ctx.report.clone();
 
-        spawn_future(move || -> Result<Aggregator, Error> {
+        spawn_future(move || -> Result<(Aggregator, Vec<IndexEntry>), Error> {
             report.debug("start reading metadata sm");
             let start = std::time::Instant::now();
-            let metadata_sm_on_disk =
+            let (metadata_sm_on_disk, metadata_entries_on_disk) =
                 read_metadata_space_map(engine, metadata_root, opts.ignore_non_fatal, &metadata_sm_agg)?;
             let duration = start.elapsed();
             report.debug(&format!("reading metadata sm: {:?}", duration));
-            Ok(metadata_sm_on_disk)
+            Ok((metadata_sm_on_disk, metadata_entries_on_disk))
         })
     };
 
@@ -1537,11 +1537,24 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
 
     //-----------------------------------------
     // Compare the data space maps
+    let mut data_leaks = Vec::new();
+    let mut current_index = None;
+    let mut err = None;
     match data_sm_on_disk_future() {
-        Ok(data_sm_on_disk) => {
+        Ok((data_sm_on_disk, data_entries_on_disk)) => {
             data_sm.diff(
                 &data_sm_on_disk,
                 |block: u64, l_count: u32, r_count: u32| {
+                    let bitmap_index = block / ENTRIES_PER_BITMAP as u64;
+                    if l_count == 0 && current_index != Some(bitmap_index) {
+                        data_leaks.push(BitmapLeak {
+                            loc: data_entries_on_disk[bitmap_index as usize].blocknr,
+                            blocknr: ENTRIES_PER_BITMAP as u64 * bitmap_index,
+                        });
+                        current_index = Some(bitmap_index);
+                    } else if l_count != 0 {
+                        err = Some(anyhow!("data space map contains errors"));
+                    }
                     eprintln!(
                         "data count difference for block {}: {}, {}",
                         block, l_count, r_count
@@ -1553,15 +1566,31 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
             todo!()
         }
     }
+    if err.is_some() {
+        return Err(metadata_err("data space map", err.unwrap()).into());
+    }
 
     //-----------------------------------------
     // Compare the metadata space maps
+    let mut metadata_leaks = Vec::new();
+    let mut current_index = None;
+    let mut err = None;
     match metadata_sm_on_disk_future() {
-        Ok(metadata_sm_on_disk) => {
+        Ok((metadata_sm_on_disk, metadata_entries_on_disk)) => {
             //let metadata_sm_agg = metadata_sm_agg.lock().unwrap();
             metadata_sm_agg.diff(
                 &metadata_sm_on_disk,
                 |block: u64, l_count: u32, r_count: u32| {
+                    let bitmap_index = block / ENTRIES_PER_BITMAP as u64;
+                    if l_count == 0 && current_index != Some(bitmap_index) {
+                        metadata_leaks.push(BitmapLeak {
+                            loc: metadata_entries_on_disk[bitmap_index as usize].blocknr,
+                            blocknr: ENTRIES_PER_BITMAP as u64 * bitmap_index,
+                        });
+                        current_index = Some(bitmap_index);
+                    } else if l_count != 0 {
+                        err = Some(anyhow!("data space map contains errors"));
+                    }
                     eprintln!(
                         "metadata count difference for block {}: {}, {}",
                         block, l_count, r_count
@@ -1573,6 +1602,9 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
             eprintln!("metadata sm read failed: {:?}", e);
             todo!();
         }
+    }
+    if err.is_some() {
+        return Err(metadata_err("data space map", err.unwrap()).into());
     }
 
     /*
@@ -1614,12 +1646,12 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
 
     //-----------------------------------------
     // Fix minor issues found in the metadata
+    */
 
-    /*
     if !data_leaks.is_empty() {
         if opts.auto_repair || opts.clear_needs_check {
             report.warning("Repairing data leaks.");
-            repair_space_map(engine.clone(), data_leaks, data_sm.clone())?;
+            repair_space_map_agg(engine.clone(), data_leaks, &data_sm)?;
         } else if !opts.ignore_non_fatal {
             return Err(anyhow!(concat!(
                 "data space map contains leaks\n",
@@ -1627,12 +1659,11 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
             )));
         }
     }
-    */
 
     if !metadata_leaks.is_empty() {
         if opts.auto_repair || opts.clear_needs_check {
             report.warning("Repairing metadata leaks.");
-            repair_space_map(engine.clone(), metadata_leaks, metadata_sm.clone())?;
+            repair_space_map_agg(engine.clone(), metadata_leaks, &metadata_sm_agg)?;
         } else if !opts.ignore_non_fatal {
             return Err(anyhow!(concat!(
                 "metadata space map contains leaks\n",
@@ -1641,6 +1672,7 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
         }
     }
 
+    /*
     if opts.auto_repair || opts.clear_needs_check {
         let cleared = clear_needs_check_flag(engine.clone())?;
         if cleared {
