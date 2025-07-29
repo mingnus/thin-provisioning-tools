@@ -187,9 +187,7 @@ pub fn read_space_map(
     eprintln!("nr index entries: {}", entries.len());
 
     let mut loc_to_index = HashMap::new();
-    let mut blocks = Vec::with_capacity(entries.len());
     for (i, e) in entries.iter().enumerate() {
-        blocks.push(e.blocknr);
         loc_to_index.insert(e.blocknr, i as u64);
     }
 
@@ -202,8 +200,7 @@ pub fn read_space_map(
     let mut index_handler = IndexHandler::new(loc_to_index, &aggregator);
 
     let start = std::time::Instant::now();
-    // FIXME: is the cloned() expensive?
-    engine.read_blocks(&mut pool, &mut blocks.iter().cloned(), &mut index_handler)?;
+    engine.read_blocks(&mut pool, &mut entries.iter().map(|e| e.blocknr), &mut index_handler)?;
     let duration = start.elapsed();
     eprintln!("reading bitmap blocks {:?}" , duration);
 
