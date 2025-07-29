@@ -199,6 +199,22 @@ impl SyncIoEngine {
 
         Ok(results)
     }
+
+    fn read_blocks_sync(&self, blocks: &[u64], handler: &mut dyn ReadHandler) {
+        if let Ok(rblocks) = self.read_many(blocks) {
+            for (rb, bn) in rblocks.into_iter().zip(blocks) {
+                if let Ok(rb) = rb {
+                    handler.handle(rb.loc, Ok(rb.get_data()));
+                } else {
+                    handler.handle(*bn, Err(rb.unwrap_err()));
+                }
+            }
+        } else {
+            for bn in blocks {
+                handler.handle(*bn, Err(std::io::Error::from_raw_os_error(-5)));
+            }
+        }
+    }
 }
 
 impl IoEngine for SyncIoEngine {
@@ -233,22 +249,19 @@ impl IoEngine for SyncIoEngine {
 
     fn read_blocks(
         &self,
-        io_block_pool: &mut BufferPool,
+        _io_block_pool: &mut BufferPool,
         blocks: &mut dyn Iterator<Item = u64>,
         handler: &mut dyn ReadHandler,
     ) -> io::Result<()> {
+        let mut chunk = Vec::new();
         for b in blocks {
-            if let Some(block) = io_block_pool.get(b) {
-                let data: &mut [u8] = unsafe {std::slice::from_raw_parts_mut(block.data, BLOCK_SIZE)};
-                if self.file.read_exact_at(data, b * BLOCK_SIZE as u64).is_ok() {
-                    handler.handle(b, Ok(data));
-                } else {
-                    handler.handle(b, Err(io::Error::last_os_error()));
-                }
-                io_block_pool.put(block);
+            chunk.push(b);
+            if chunk.len() == 512 {
+                self.read_blocks_sync(&chunk, handler);
+                chunk.clear();
             }
-            // TODO: err every blocks
         }
+        self.read_blocks_sync(&chunk, handler);
         handler.complete();
         Ok(())
     }
