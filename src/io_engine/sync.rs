@@ -237,7 +237,20 @@ impl IoEngine for SyncIoEngine {
         blocks: &mut dyn Iterator<Item = u64>,
         handler: &mut dyn ReadHandler,
     ) -> io::Result<()> {
-        todo!();
+        for b in blocks {
+            if let Some(block) = io_block_pool.get(b) {
+                let data: &mut [u8] = unsafe {std::slice::from_raw_parts_mut(block.data, BLOCK_SIZE)};
+                if self.file.read_exact_at(data, b * BLOCK_SIZE as u64).is_ok() {
+                    handler.handle(b, Ok(data));
+                } else {
+                    handler.handle(b, Err(io::Error::last_os_error()));
+                }
+                io_block_pool.put(block);
+            }
+            // TODO: err every blocks
+        }
+        handler.complete();
+        Ok(())
     }
 }
 
