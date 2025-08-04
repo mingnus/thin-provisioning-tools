@@ -151,7 +151,14 @@ impl<'a> AsyncReader<'a> {
     where
         F: FnMut(u64, Result<&[u8]>),
     {
-        self.ring.completion().for_each(|cqe| {
+        let cq = self.ring.completion();
+        if cq.is_empty() {
+            eprintln!("{:?} completion queue is empty, in process_completions", std::thread::current().id());
+        }
+        cq.for_each(|cqe| {
+            if cqe.user_data() == 0 {
+                eprintln!("{:?} zero user data", std::thread::current().id());
+            }
             let mut io_data = unsafe { Box::from_raw(cqe.user_data() as *mut IoData) };
             if cqe.result() < 0 {
                 for b in &io_data.blocks {
@@ -398,6 +405,7 @@ impl AsyncIoEngine {
             if let Some(ret) = cq.next() {
                 Ok(ret)
             } else {
+                eprintln!("{:?} completion queue is empty, in exec_op", std::thread::current().id());
                 io_err("completion queue is empty")
             }
         })
@@ -492,7 +500,11 @@ impl IoEngine for AsyncIoEngine {
                 ring.submit_and_wait(1)?;
 
                 // Process completions
-                ring.completion().for_each(|cqe| {
+                let cq = ring.completion();
+                if cq.is_empty() {
+                    eprintln!("{:?} completion queue is empty, in read_many", std::thread::current().id());
+                }
+                cq.for_each(|cqe| {
                     let idx = cqe.user_data() as usize;
 
                     if cqe.result() < 0 {
@@ -602,7 +614,11 @@ impl IoEngine for AsyncIoEngine {
                 ring.submit_and_wait(1)?;
 
                 // Process completions
-                ring.completion().for_each(|cqe| {
+                let cq = ring.completion();
+                if cq.is_empty() {
+                    eprintln!("{:?} completion queue is empty, in write_many", std::thread::current().id());
+                }
+                cq.for_each(|cqe| {
                     let idx = cqe.user_data() as usize;
 
                     if cqe.result() < 0 {
