@@ -220,6 +220,7 @@ impl<'a> AsyncReader<'a> {
             }
 
             // Submit and wait for completions
+            // std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
             self.ring.submit_and_wait(1)?;
 
             // Process completions
@@ -398,6 +399,7 @@ impl AsyncIoEngine {
             drop(sq);
 
             // Wait for completion
+            // std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
             ring.submit_and_wait(1)?;
 
             // Get completion result
@@ -497,6 +499,7 @@ impl IoEngine for AsyncIoEngine {
                 }
 
                 // Submit operations and wait for at least one completion
+                // std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
                 ring.submit_and_wait(1)?;
 
                 // Process completions
@@ -611,6 +614,7 @@ impl IoEngine for AsyncIoEngine {
                 }
 
                 // Submit operations and wait for at least one completion
+                // std::sync::atomic::fence(std::sync::atomic::Ordering::Release);
                 ring.submit_and_wait(1)?;
 
                 // Process completions
