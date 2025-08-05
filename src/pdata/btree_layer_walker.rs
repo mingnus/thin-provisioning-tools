@@ -212,19 +212,23 @@ pub fn read_leaf_nodes<V: Unpack>(
     nr_unpackers: usize,
     ignore_non_fatal: bool,
 ) {
-    // Kick off the unpackers
-    std::thread::scope(|s| {
-        let chunk_size = (leaves.len() + nr_unpackers - 1) / nr_unpackers;
-        for i in 0..nr_unpackers {
-            let engine = engine.clone();
-            let l_begin = i * chunk_size;
-            let l_end = ((i + 1) * chunk_size).min(leaves.len());
-            let mut leaves = RangedBitsetIter::new(&leaves, l_begin..l_end);
-            let v = nv.clone();
+    if nr_unpackers > 1 {
+        // Kick off the unpackers
+        std::thread::scope(|s| {
+            let chunk_size = (leaves.len() + nr_unpackers - 1) / nr_unpackers;
+            for i in 0..nr_unpackers {
+                let engine = engine.clone();
+                let l_begin = i * chunk_size;
+                let l_end = ((i + 1) * chunk_size).min(leaves.len());
+                let mut leaves = RangedBitsetIter::new(&leaves, l_begin..l_end);
+                let v = nv.clone();
 
-            s.spawn(move || unpacker::<V>(engine, v, &mut leaves, depth == 0, ignore_non_fatal));
-        }
-    });
+                s.spawn(move || unpacker::<V>(engine, v, &mut leaves, depth == 0, ignore_non_fatal));
+            }
+        });
+    } else {
+        let _ = unpacker::<V>(engine, nv, &mut leaves.ones().map(|b| b as u64), depth == 0, ignore_non_fatal);
+    }
 }
 
 pub fn read_nodes<V: Unpack>(
