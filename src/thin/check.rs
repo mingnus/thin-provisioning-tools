@@ -718,7 +718,8 @@ fn collect_nodes_in_use(
                         batch_nodes.clone(),
                     ) {
                         // FIXME: handle error properly
-                        eprintln!("Error reading internal nodes: {:?}", e);
+                        eprintln!("{:?} Error reading internal nodes: {:?}",
+                                  std::thread::current().id(), e);
                     }
                 }
             });
