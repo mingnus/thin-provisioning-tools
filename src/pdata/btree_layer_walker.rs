@@ -246,7 +246,7 @@ pub fn read_nodes<V: Unpack>(
         root,
         ignore_non_fatal,
     )?;
-    read_leaf_nodes(engine, nv, &leaves, depth, 4, ignore_non_fatal);
+    read_leaf_nodes(engine, nv, &leaves, depth, 1, ignore_non_fatal);
     Ok(())
 }
 
