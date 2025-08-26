@@ -201,7 +201,7 @@ impl SyncIoEngine {
     }
 
     fn read_blocks_sync(&self, blocks: &[u64], handler: &mut dyn ReadHandler) {
-        if let Ok(rblocks) = self.read_many(blocks) {
+        if let Ok(rblocks) = Self::read_many_((&self.file).into(), blocks) {
             for (rb, bn) in rblocks.into_iter().zip(blocks) {
                 if let Ok(rb) = rb {
                     handler.handle(rb.loc, Ok(rb.get_data()));
@@ -234,7 +234,11 @@ impl IoEngine for SyncIoEngine {
     }
 
     fn read_many(&self, blocks: &[u64]) -> Result<Vec<Result<Block>>> {
-        Self::read_many_((&self.file).into(), blocks)
+        let mut bs = Vec::with_capacity(blocks.len());
+        for b in blocks {
+            bs.push(self.read(*b));
+        }
+        Ok(bs)
     }
 
     fn write(&self, b: &Block) -> Result<()> {
