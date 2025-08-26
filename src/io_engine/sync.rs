@@ -56,29 +56,31 @@ impl SyncIoEngine {
 
     fn read_many_<T: VectoredIo>(
         vio: VectoredBlockIo<T>,
+        io_block_pool: &mut BufferPool,
         blocks: &[u64],
-    ) -> Result<Vec<Result<Block>>> {
+        handler: &mut dyn ReadHandler,
+    ) -> Result<()> {
         const GAP_THRESHOLD: u64 = 8;
 
         if blocks.is_empty() {
-            return Ok(vec![]);
+            return Ok(());
         }
 
         // Split into runs of adjacent blocks
         let batches = generate_runs(blocks, GAP_THRESHOLD, libc::UIO_MAXIOV as u64);
 
         // Issue ios
+        // FIXME: put those IOBlocks on get error
         let mut bs = blocks
             .iter()
-            .map(|loc| Some(Block::new(*loc)))
-            .collect::<Vec<Option<Block>>>();
+            .map(|loc| io_block_pool.get(*loc).ok_or_else(|| io::Error::new(io::ErrorKind::Other, "out of pool space")))
+            .collect::<Result<Vec<IOBlock>>>()?;
 
         let mut issued_minus_gaps = 0;
 
-        let mut results: Vec<Result<Block>> = Vec::with_capacity(bs.len());
         let mut bs_index = 0;
 
-        let mut gaps: Vec<Block> = Vec::with_capacity(16);
+        let mut gaps: Vec<IOBlock> = Vec::with_capacity(16);
 
         for batch in batches {
             let mut first = None;
@@ -92,8 +94,12 @@ impl SyncIoEngine {
                             first = Some(*b);
                         }
                         for b in *b..*e {
-                            assert_eq!(b, bs[issued_minus_gaps].as_ref().unwrap().loc);
-                            buffers.push(bs[issued_minus_gaps].as_ref().unwrap().get_data());
+                            assert_eq!(b, bs[issued_minus_gaps].loc);
+
+                            let data = unsafe {
+                                std::slice::from_raw_parts_mut(bs[issued_minus_gaps].data, 4096)
+                            };
+                            buffers.push(data);
                             issued_minus_gaps += 1;
                         }
                     }
@@ -104,8 +110,11 @@ impl SyncIoEngine {
                             first = Some(*b);
                         }
                         for loc in *b..*e {
-                            let gap_buffer = Block::new(loc);
-                            buffers.push(gap_buffer.get_data());
+                            let gap_buffer = io_block_pool.get(loc).ok_or_else(|| io::Error::new(io::ErrorKind::Other, "out of pool space"))?;
+                            let data = unsafe {
+                                std::slice::from_raw_parts_mut(gap_buffer.data, 4096)
+                            };
+                            buffers.push(data);
                             gaps.push(gap_buffer);
                         }
                     }
@@ -117,19 +126,24 @@ impl SyncIoEngine {
             // Issue io
             let run_results = vio.read_blocks(&mut buffers[..], first.unwrap() * BLOCK_SIZE as u64);
 
+            let mut rindex = 0;
             if let Ok(run_results) = run_results {
                 // select results
-                let mut rindex = 0;
                 for op in batch {
                     match op {
                         RunOp::Run(b, e) => {
                             for i in b..e {
                                 if run_results[rindex].is_err() {
-                                    results.push(Self::bad_read());
+                                    handler.handle(blocks[bs_index], Self::bad_read());
                                 } else {
-                                    let b = bs[bs_index].take().unwrap();
+                                    let b = &bs[bs_index];
                                     assert_eq!(i, b.loc);
-                                    results.push(Ok(b));
+                                    let data = unsafe {
+                                        // FIXME: do not hardcode 4k block size once we know
+                                        // why BufferPool::get_block_size() returns 64k.
+                                        std::slice::from_raw_parts_mut(b.data, 4096)
+                                    };
+                                    handler.handle(b.loc, Ok(data));
                                 }
                                 bs_index += 1;
                                 rindex += 1;
@@ -146,20 +160,28 @@ impl SyncIoEngine {
                     match op {
                         RunOp::Run(b, e) => {
                             for _ in b..e {
-                                results.push(Self::bad_read());
+                                handler.handle(blocks[bs_index], Self::bad_read());
                                 bs_index += 1;
                             }
+                            rindex += (e - b) as usize;
                         }
-                        RunOp::Gap(..) => {
-                            // do nothing
+                        RunOp::Gap(b, e) => {
+                            rindex += (e - b) as usize;
                         }
                     }
                 }
             }
         }
-        assert_eq!(results.len(), blocks.len());
+        //assert_eq!(rindex, run_results.len());
+        assert_eq!(bs_index, blocks.len());
+        for b in bs {
+            io_block_pool.put(b);
+        }
+        for b in gaps {
+            io_block_pool.put(b);
+        }
 
-        Ok(results)
+        Ok(())
     }
 
     fn write_many_<T: VectoredIo>(
@@ -200,8 +222,9 @@ impl SyncIoEngine {
         Ok(results)
     }
 
-    fn read_blocks_sync(&self, blocks: &[u64], handler: &mut dyn ReadHandler) {
-        if let Ok(rblocks) = Self::read_many_((&self.file).into(), blocks) {
+    fn read_blocks_sync(&self, io_block_pool: &mut BufferPool, blocks: &[u64], handler: &mut dyn ReadHandler) {
+        Self::read_many_((&self.file).into(), io_block_pool, blocks, handler);
+        /*if let Ok(rblocks) = Self::read_many_((&self.file).into(), blocks)
             for (rb, bn) in rblocks.into_iter().zip(blocks) {
                 if let Ok(rb) = rb {
                     handler.handle(rb.loc, Ok(rb.get_data()));
@@ -213,7 +236,7 @@ impl SyncIoEngine {
             for bn in blocks {
                 handler.handle(*bn, Err(std::io::Error::from_raw_os_error(-5)));
             }
-        }
+        }*/
     }
 }
 
@@ -253,7 +276,7 @@ impl IoEngine for SyncIoEngine {
 
     fn read_blocks(
         &self,
-        _io_block_pool: &mut BufferPool,
+        io_block_pool: &mut BufferPool,
         blocks: &mut dyn Iterator<Item = u64>,
         handler: &mut dyn ReadHandler,
     ) -> io::Result<()> {
@@ -261,11 +284,11 @@ impl IoEngine for SyncIoEngine {
         for b in blocks {
             chunk.push(b);
             if chunk.len() == 512 {
-                self.read_blocks_sync(&chunk, handler);
+                self.read_blocks_sync(io_block_pool, &chunk, handler);
                 chunk.clear();
             }
         }
-        self.read_blocks_sync(&chunk, handler);
+        self.read_blocks_sync(io_block_pool, &chunk, handler);
         handler.complete();
         Ok(())
     }
