@@ -193,7 +193,7 @@ fn unpacker<V: Unpack>(
     is_root: bool,
     ignore_non_fatal: bool,
 ) -> anyhow::Result<()> {
-    let io_block_size = 64 * 1024;
+    let io_block_size = 4 * 1024;
     let buffer_size = 16 * 1024 * 1024; // 16m
     let nr_io_blocks = buffer_size / io_block_size;
     let mut buffers = BufferPool::new(nr_io_blocks, io_block_size);
