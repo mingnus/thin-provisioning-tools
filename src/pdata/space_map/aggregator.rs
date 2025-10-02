@@ -654,6 +654,10 @@ impl Aggregator {
         total
     }
 
+    pub fn get_nr_regions(&self) -> usize {
+        self.regions.len()
+    }
+
     pub fn inc_allocated(&self, count: u64) {
         let mut nr_allocated = self.nr_allocated.lock().unwrap();
         *nr_allocated = nr_allocated.saturating_add(count);
