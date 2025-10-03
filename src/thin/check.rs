@@ -806,11 +806,13 @@ fn examine_leaf_(
 
 struct LeafHandler {
     data_sm: Arc<Aggregator>,
+    nodes: Arc<BatchedNodeMap>,
     summaries: Arc<Mutex<HashMap<u32, NodeSummary>>>,
     ignore_non_fatal: bool,
 
     inc_batch: Vec<u64>,
     summary_batch: Vec<(u32, NodeSummary)>,
+    updates: Vec<NodeUpdate>,
 }
 
 const INC_BATCH_SIZE: usize = 1024;
@@ -819,15 +821,18 @@ const SUMMARY_BATCH_SIZE: usize = 1024;
 impl LeafHandler {
     fn new(
         data_sm: Arc<Aggregator>,
+        nodes: Arc<BatchedNodeMap>,
         summaries: Arc<Mutex<HashMap<u32, NodeSummary>>>,
         ignore_non_fatal: bool,
     ) -> Self {
         Self {
             data_sm,
+            nodes,
             summaries,
             ignore_non_fatal,
             inc_batch: Vec::with_capacity(INC_BATCH_SIZE + 256),
             summary_batch: Vec::with_capacity(SUMMARY_BATCH_SIZE + 256),
+            updates: Vec::new(),
         }
     }
 
@@ -868,6 +873,25 @@ impl LeafHandler {
             self.flush_summaries();
         }
     }
+
+    fn flush_updates(&mut self) {
+        if !self.updates.is_empty() {
+            self.nodes.batch_update(std::mem::take(&mut self.updates));
+        }
+    }
+
+    fn maybe_flush_updates(&mut self) {
+        if self.updates.len() >= NODE_MAP_BATCH_SIZE {
+            self.flush_updates();
+        }
+    }
+
+    fn push_error(&mut self, loc: u32, e: NodeError) {
+        self.updates.push(NodeUpdate {
+            loc: loc as u32,
+            info: NodeInfo::Error(e),
+        });
+    }
 }
 
 impl ReadHandler for LeafHandler {
@@ -884,13 +908,15 @@ impl ReadHandler for LeafHandler {
                         self.summary_batch.push((loc as u32, sum));
                         self.maybe_flush_summaries();
                     }
-                    Err(_e) => {
-                        todo!();
+                    Err(e) => {
+                        self.maybe_flush_updates();
+                        self.push_error(loc as u32, e);
                     }
                 }
             }
             Err(_e) => {
-                todo!();
+                self.maybe_flush_updates();
+                self.push_error(loc as u32, NodeError::IoError);
             }
         }
     }
@@ -905,6 +931,7 @@ fn unpacker(
     engine: Arc<dyn IoEngine>,
     leaves: &mut dyn Iterator<Item = u64>,
     data_sm: Arc<Aggregator>,
+    nodes: Arc<BatchedNodeMap>,
     summaries: Arc<Mutex<HashMap<u32, NodeSummary>>>,
     ignore_non_fatal: bool,
 ) -> Result<()> {
@@ -913,7 +940,7 @@ fn unpacker(
     let nr_io_blocks = buffer_size / io_block_size;
     let mut buffers = BufferPool::new(nr_io_blocks, io_block_size);
 
-    let mut handler = LeafHandler::new(data_sm, summaries, ignore_non_fatal);
+    let mut handler = LeafHandler::new(data_sm, nodes, summaries, ignore_non_fatal);
     engine.read_blocks(&mut buffers, leaves, &mut handler)?;
 
     Ok(())
@@ -929,7 +956,7 @@ fn read_leaf_nodes(
 
     let leaves = nodes.leaf_nodes.clone();
     let summaries = Arc::new(Mutex::new(HashMap::new()));
-    let nodes = Arc::new(Mutex::new(nodes));
+    let batch_nodes = Arc::new(BatchedNodeMap::new(nodes));
 
     // Kick off the unpackers
     thread::scope(|s| {
@@ -938,6 +965,7 @@ fn read_leaf_nodes(
             let l_begin = i * chunk_size;
             let l_end = ((i + 1) * chunk_size).min(leaves.len());
             let mut leaves = RangedBitsetIter::new(&leaves, l_begin..l_end);
+            let batch_nodes = batch_nodes.clone();
             let data_sm = data_sm.clone();
             let summaries = summaries.clone();
 
@@ -946,6 +974,7 @@ fn read_leaf_nodes(
                     ctx.engine.clone(),
                     &mut leaves,
                     data_sm,
+                    batch_nodes,
                     summaries,
                     ignore_non_fatal,
                 )
@@ -954,7 +983,11 @@ fn read_leaf_nodes(
     });
 
     // extract the results
-    let nodes = Arc::into_inner(nodes).unwrap().into_inner().unwrap();
+    let nodes = Arc::into_inner(batch_nodes)
+        .unwrap()
+        .inner
+        .into_inner()
+        .unwrap();
     let summaries = Arc::into_inner(summaries).unwrap().into_inner().unwrap();
 
     Ok((nodes, summaries))
