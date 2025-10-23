@@ -13,6 +13,7 @@ use crate::pdata::array_walker::*;
 use crate::pdata::bitset::*;
 use crate::pdata::space_map::checker::*;
 use crate::pdata::space_map::common::*;
+use crate::pdata::space_map::repairer::*;
 use crate::pdata::space_map::*;
 use crate::pdata::unpack::unpack;
 use crate::report::*;
@@ -384,7 +385,8 @@ pub fn check(opts: CacheCheckOptions) -> anyhow::Result<()> {
     if !metadata_leaks.is_empty() {
         if opts.auto_repair || opts.clear_needs_check {
             ctx.report.warning("Repairing metadata leaks.");
-            repair_space_map(ctx.engine.as_ref(), metadata_leaks, metadata_sm.clone())?;
+            let sm = metadata_sm.lock().unwrap();
+            repair_space_map(ctx.engine.as_ref(), metadata_leaks, &*sm)?;
         } else if !opts.ignore_non_fatal {
             return Err(anyhow!(concat!(
                 "metadata space map contains leaks\n",

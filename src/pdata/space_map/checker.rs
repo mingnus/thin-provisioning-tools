@@ -1,5 +1,4 @@
 use anyhow::{anyhow, Result};
-use std::io::Cursor;
 use std::sync::Arc;
 
 use crate::checksum;
@@ -273,63 +272,6 @@ pub fn check_metadata_space_map(
 
     // check low ref-counts in bitmaps
     check_low_ref_counts(engine, report, "metadata", entries, metadata_sm)
-}
-
-// This assumes the only errors in the space map are leaks.  Entries should just be
-// those that contain leaks.
-pub fn repair_space_map(
-    engine: &dyn IoEngine,
-    entries: Vec<BitmapLeak>,
-    sm: ASpaceMap,
-) -> Result<()> {
-    let sm = sm.lock().unwrap();
-
-    let mut blocks = Vec::with_capacity(entries.len());
-    for i in &entries {
-        blocks.push(i.loc);
-    }
-
-    // FIXME: we should do this in batches
-    let rblocks = engine.read_many(&blocks[0..])?;
-    let mut write_blocks = Vec::new();
-
-    for (i, rb) in rblocks.into_iter().enumerate() {
-        if let Ok(b) = rb {
-            let be = &entries[i];
-            let mut blocknr = be.blocknr;
-            let mut bitmap = unpack::<Bitmap>(b.get_data())?;
-            for e in bitmap.entries.iter_mut() {
-                if blocknr >= sm.get_nr_blocks()? {
-                    break;
-                }
-
-                if let BitmapEntry::Small(actual) = e {
-                    let expected = sm.get(blocknr)?;
-                    if *actual == 1 && expected == 0 {
-                        *e = BitmapEntry::Small(0);
-                    }
-                }
-
-                blocknr += 1;
-            }
-
-            let mut out = Cursor::new(b.get_data());
-            bitmap.pack(&mut out)?;
-            checksum::write_checksum(b.get_data(), checksum::BT::BITMAP)?;
-
-            write_blocks.push(b);
-        } else {
-            return Err(anyhow!("Unable to reread bitmap blocks for repair"));
-        }
-    }
-
-    let results = engine.write_many(&write_blocks[0..])?;
-    for ret in results {
-        if ret.is_err() {
-            return Err(anyhow!("Unable to repair space map: {:?}", ret));
-        }
-    }
-    Ok(())
 }
 
 //------------------------------------------

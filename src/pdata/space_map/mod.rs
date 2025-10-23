@@ -1,12 +1,12 @@
 pub mod aggregator;
 pub mod aggregator_load;
-pub mod aggregator_repair;
 pub mod allocated_blocks;
 pub mod base;
 pub mod checker;
 pub mod common;
 pub mod disk;
 pub mod metadata;
+pub mod repairer;
 
 pub use crate::pdata::space_map::base::*;
 

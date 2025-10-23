@@ -16,8 +16,8 @@ use crate::pdata::btree_layer_walker::*;
 use crate::pdata::btree_utils::*;
 use crate::pdata::space_map::aggregator::*;
 use crate::pdata::space_map::aggregator_load::*;
-use crate::pdata::space_map::aggregator_repair::*;
 use crate::pdata::space_map::common::*;
+use crate::pdata::space_map::repairer::*;
 use crate::pdata::unpack::*;
 use crate::report::*;
 use crate::thin::block_time::*;
@@ -1562,7 +1562,7 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
     if !data_leaks.is_empty() {
         if opts.auto_repair || opts.clear_needs_check {
             report.warning("Repairing data leaks.");
-            repair_space_map(engine.clone(), data_leaks, &data_sm)?;
+            repair_space_map(engine.as_ref(), data_leaks, data_sm.as_ref())?;
         } else if !opts.ignore_non_fatal {
             return Err(anyhow!(concat!(
                 "data space map contains leaks\n",
@@ -1574,7 +1574,7 @@ pub fn check(opts: ThinCheckOptions) -> Result<()> {
     if !metadata_leaks.is_empty() {
         if opts.auto_repair || opts.clear_needs_check {
             report.warning("Repairing metadata leaks.");
-            repair_space_map(engine.clone(), metadata_leaks, &metadata_sm)?;
+            repair_space_map(engine.as_ref(), metadata_leaks, metadata_sm.as_ref())?;
         } else if !opts.ignore_non_fatal {
             return Err(anyhow!(concat!(
                 "metadata space map contains leaks\n",

@@ -1,9 +1,7 @@
 use anyhow::Result;
-use std::sync::Arc;
 
 use crate::checksum;
 use crate::io_engine::IoEngine;
-use crate::pdata::space_map::aggregator::*;
 use crate::pdata::space_map::base::RefCount;
 use crate::pdata::space_map::common::*;
 use crate::pdata::unpack::*;
@@ -14,10 +12,12 @@ pub use crate::pdata::space_map::checker::BitmapLeak;
 
 //------------------------------------------
 
+// This assumes the only errors in the space map are leaks. Entries should just be
+// those that contain leaks.
 pub fn repair_space_map(
-    engine: Arc<dyn IoEngine + Send + Sync>,
+    engine: &dyn IoEngine,
     entries: Vec<BitmapLeak>,
-    sm: &Aggregator,
+    sm: &dyn RefCount,
 ) -> Result<()> {
     let mut blocks = Vec::with_capacity(entries.len());
     for i in &entries {
@@ -34,7 +34,7 @@ pub fn repair_space_map(
             let mut blocknr = be.blocknr;
             let mut bitmap = unpack::<Bitmap>(b.get_data())?;
             for e in bitmap.entries.iter_mut() {
-                if blocknr >= sm.get_nr_blocks() as u64 {
+                if blocknr >= sm.get_nr_blocks()? {
                     break;
                 }
 
