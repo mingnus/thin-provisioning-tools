@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use fixedbitset::FixedBitSet;
+use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
 use std::str::FromStr;
@@ -14,7 +15,8 @@ use crate::io_engine::*;
 use crate::pdata::btree::{self, *};
 use crate::pdata::btree_utils::*;
 use crate::pdata::btree_walker::*;
-use crate::pdata::space_map::common::SMRoot;
+use crate::pdata::space_map::aggregator::*;
+use crate::pdata::space_map::common::*;
 use crate::pdata::space_map::*;
 use crate::pdata::unpack::unpack;
 use crate::report::{ProgressMonitor, Report};
@@ -23,7 +25,6 @@ use crate::thin::device_detail::DeviceDetail;
 use crate::thin::metadata_repair::is_superblock_consistent;
 use crate::thin::superblock::*;
 use crate::units::*;
-use crate::utils::hashvec::HashVec;
 use crate::utils::prof::*;
 
 //------------------------------------------
@@ -307,10 +308,10 @@ struct NodeMap {
     node_type: FixedBitSet,
     leaf_nodes: FixedBitSet, // FIXME: remove this one
     nr_leaves: u32,
-    internal_info: HashVec<InternalNodeInfo>,
+    internal_info: HashMap<u32, InternalNodeInfo>,
 
     // Stores errors of the node itself; errors in children are not included
-    node_errors: HashVec<NodeError>,
+    node_errors: HashMap<u32, NodeError>,
 }
 
 impl NodeMap {
@@ -319,8 +320,8 @@ impl NodeMap {
             node_type: FixedBitSet::with_capacity((nr_blocks as usize) * 2),
             leaf_nodes: FixedBitSet::with_capacity(nr_blocks as usize),
             nr_leaves: 0,
-            internal_info: HashVec::new(),
-            node_errors: HashVec::new(),
+            internal_info: HashMap::new(),
+            node_errors: HashMap::new(),
         }
     }
 
@@ -400,23 +401,22 @@ impl NodeMap {
     }
 
     // Returns total number of nodes found
-    fn len(&self) -> u32 {
+    fn _len(&self) -> u32 {
         self.internal_info.len() as u32 + self.nr_leaves
     }
 }
 
 //------------------------------------------
 
-fn is_seen(loc: u32, metadata_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>) -> Result<bool> {
-    let mut sm = metadata_sm.lock().unwrap();
-    sm.inc(loc as u64, 1)?;
-    Ok(sm.get(loc as u64).unwrap_or(0) > 1)
+fn is_seen(loc: u32, metadata_sm: &RestrictedTwoAggregator) -> Result<bool> {
+    let seen = metadata_sm.test_and_inc(&[loc as u64]);
+    Ok(seen.contains(0))
 }
 
 // FIXME: split up this function
 fn read_node_(
     ctx: &Context,
-    metadata_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
+    metadata_sm: &RestrictedTwoAggregator,
     b: &Block,
     depth: usize,
     ignore_non_fatal: bool,
@@ -491,7 +491,7 @@ fn read_node_(
 /// error field of the nodes will be filled in.
 fn read_node(
     ctx: &Context,
-    metadata_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
+    metadata_sm: &RestrictedTwoAggregator,
     b: &Block,
     depth: usize,
     ignore_non_fatal: bool,
@@ -502,7 +502,7 @@ fn read_node(
 
 fn read_internal_nodes(
     ctx: &Context,
-    metadata_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
+    metadata_sm: &RestrictedTwoAggregator,
     root: u32,
     ignore_non_fatal: bool,
     nodes: &mut NodeMap,
@@ -534,7 +534,7 @@ fn read_internal_nodes(
 
 fn collect_nodes_in_use(
     ctx: &Context,
-    metadata_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
+    metadata_sm: &RestrictedTwoAggregator,
     roots: &[u64],
     ignore_non_fatal: bool,
 ) -> NodeMap {
@@ -559,11 +559,11 @@ fn summarize_tree(
     root: u32,
     is_root: bool,
     nodes: &NodeMap,
-    metadata_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
-    summaries: &mut HashVec<NodeSummary>,
+    metadata_sm: &RestrictedTwoAggregator,
+    summaries: &mut HashMap<u32, NodeSummary>,
     ignore_non_fatal: bool,
 ) -> NodeSummary {
-    if let Some(sum) = summaries.get(root) {
+    if let Some(sum) = summaries.get(&root) {
         // Check underfull
         if !ignore_non_fatal && !is_root && sum.nr_entries < MIN_ENTRIES {
             return NodeSummary::error();
@@ -591,7 +591,7 @@ fn summarize_tree(
 
     match nodes.get_type(root) {
         NodeType::Internal => {
-            if let Some(info) = nodes.internal_info.get(root) {
+            if let Some(info) = nodes.internal_info.get(&root) {
                 // Check underfull
                 if !ignore_non_fatal && !is_root && info.keys.len() < MIN_ENTRIES as usize {
                     return NodeSummary::error();
@@ -623,7 +623,7 @@ fn summarize_tree(
                 }
 
                 // Adjust the number of shared blocks if it is a shared internal node
-                let metadata_sm = metadata_sm.lock().unwrap();
+                // TODO: Need to implement shared block detection with Aggregator
                 if metadata_sm.get(root as u64).unwrap_or(0) > 1 {
                     sum.nr_shared = sum.nr_mappings;
                 }
@@ -645,8 +645,8 @@ fn summarize_tree(
 fn count_mapped_blocks(
     roots: &[u64],
     nodes: &NodeMap,
-    metadata_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
-    summaries: &mut HashVec<NodeSummary>,
+    metadata_sm: &RestrictedTwoAggregator,
+    summaries: &mut HashMap<u32, NodeSummary>,
     ignore_non_fatal: bool,
 ) {
     for root in roots.iter() {
@@ -715,9 +715,9 @@ fn unpacker(
 
 fn summariser(
     nodes_rx: mpsc::Receiver<Vec<Node<BlockTime>>>,
-    metadata_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
-    data_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
-    summaries: &Arc<Mutex<HashVec<NodeSummary>>>,
+    metadata_sm: &Arc<RestrictedTwoAggregator>,
+    data_sm: &Arc<RestrictedTwoAggregator>,
+    summaries: &Arc<Mutex<HashMap<u32, NodeSummary>>>,
 ) {
     let mut summaries = summaries.lock().unwrap();
 
@@ -738,14 +738,12 @@ fn summariser(
             } = n
             {
                 {
-                    let mut data_sm = data_sm.lock().unwrap();
-                    for v in values {
-                        let _ = data_sm.inc(v.block, 1);
-                    }
+                    let blocks: Vec<u64> = values.iter().map(|v| v.block).collect();
+                    data_sm.increment(&blocks);
                 }
 
                 // summarize shared leaves in this phase
-                let metadata_sm = metadata_sm.lock().unwrap();
+                // TODO: Need to implement shared detection with Aggregator
                 if metadata_sm.get(header.block).unwrap_or(0) > 1 {
                     let sum = NodeSummary::from_leaf(&keys, keys.len() as u64);
                     summaries.insert(header.block as u32, sum);
@@ -760,9 +758,9 @@ fn summariser(
 
 fn exclusive_leaves_summariser(
     nodes_rx: mpsc::Receiver<Vec<Node<BlockTime>>>,
-    metadata_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
-    data_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
-    summaries: &Arc<Mutex<HashVec<NodeSummary>>>,
+    metadata_sm: &Arc<RestrictedTwoAggregator>,
+    data_sm: &Arc<RestrictedTwoAggregator>,
+    summaries: &Arc<Mutex<HashMap<u32, NodeSummary>>>,
 ) {
     let mut summaries = summaries.lock().unwrap();
 
@@ -782,10 +780,8 @@ fn exclusive_leaves_summariser(
                 header,
             } = n
             {
-                let metadata_sm = metadata_sm.lock().unwrap();
+                // TODO: Need to implement exclusive/shared detection with Aggregator
                 if metadata_sm.get(header.block).unwrap_or(0) == 1 {
-                    let data_sm = data_sm.lock().unwrap();
-
                     let mut nr_shared: u64 = 0;
                     for bt in values {
                         if data_sm.get(bt.block).unwrap_or(0) > 1 {
@@ -807,10 +803,10 @@ fn exclusive_leaves_summariser(
 fn read_leaf_nodes(
     ctx: &Context,
     nodes: NodeMap,
-    metadata_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
-    data_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
+    metadata_sm: &Arc<RestrictedTwoAggregator>,
+    data_sm: &Arc<RestrictedTwoAggregator>,
     ignore_non_fatal: bool,
-) -> Result<(NodeMap, HashVec<NodeSummary>)> {
+) -> Result<(NodeMap, HashMap<u32, NodeSummary>)> {
     const QUEUE_DEPTH: usize = 4;
     const NR_UNPACKERS: usize = 4;
 
@@ -831,7 +827,7 @@ fn read_leaf_nodes(
     let (nodes_tx, nodes_rx) = mpsc::sync_channel::<Vec<Node<BlockTime>>>(QUEUE_DEPTH);
 
     // Process chunks of leaves at once so the io engine can aggregate reads.
-    let summaries = Arc::new(Mutex::new(HashVec::with_capacity(nodes.len())));
+    let summaries = Arc::new(Mutex::new(HashMap::new()));
     let nodes = Arc::new(Mutex::new(nodes));
 
     // Kick off the unpackers
@@ -902,11 +898,11 @@ fn read_leaf_nodes(
 fn read_exclusive_leaves(
     ctx: &Context,
     nodes: NodeMap,
-    metadata_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
-    data_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
-    summaries: HashVec<NodeSummary>,
+    metadata_sm: &Arc<RestrictedTwoAggregator>,
+    data_sm: &Arc<RestrictedTwoAggregator>,
+    summaries: HashMap<u32, NodeSummary>,
     ignore_non_fatal: bool,
-) -> Result<(NodeMap, HashVec<NodeSummary>)> {
+) -> Result<(NodeMap, HashMap<u32, NodeSummary>)> {
     const QUEUE_DEPTH: usize = 4;
     const NR_UNPACKERS: usize = 4;
 
@@ -918,7 +914,7 @@ fn read_exclusive_leaves(
     // order.
     let mut leaves = Vec::with_capacity(nodes.nr_leaves as usize);
     {
-        let metadata_sm = metadata_sm.lock().unwrap();
+        // TODO: Need to implement exclusive detection with Aggregator
         for loc in nodes.leaf_nodes.ones() {
             if metadata_sm.get(loc as u64).unwrap_or(0) == 1 {
                 leaves.push(loc as u64);
@@ -1004,11 +1000,11 @@ fn read_exclusive_leaves(
 
 fn count_data_mappings_(
     ctx: &Context,
-    metadata_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
-    data_sm: &Arc<Mutex<dyn SpaceMap + Send + Sync>>,
+    metadata_sm: &Arc<RestrictedTwoAggregator>,
+    data_sm: &Arc<RestrictedTwoAggregator>,
     roots: &[u64],
     ignore_non_fatal: bool,
-) -> Result<HashVec<NodeSummary>> {
+) -> Result<HashMap<u32, NodeSummary>> {
     let start = std::time::Instant::now();
     let nodes = collect_nodes_in_use(ctx, metadata_sm, roots, ignore_non_fatal);
     let duration = start.elapsed();
@@ -1069,10 +1065,9 @@ fn count_data_mappings(
     )?;
 
     let data_root = unpack::<SMRoot>(&sb.data_sm_root[..])?;
-    let data_sm: Arc<Mutex<dyn SpaceMap + Send + Sync>> =
-        Arc::new(Mutex::new(RestrictedTwoSpaceMap::new(data_root.nr_blocks)));
-    let metadata_sm: Arc<Mutex<dyn SpaceMap + Send + Sync>> = Arc::new(Mutex::new(
-        RestrictedTwoSpaceMap::new(ctx.engine.get_nr_blocks()),
+    let data_sm = Arc::new(RestrictedTwoAggregator::new(data_root.nr_blocks as usize));
+    let metadata_sm = Arc::new(RestrictedTwoAggregator::new(
+        ctx.engine.get_nr_blocks() as usize
     ));
 
     ctx.report.set_title("Scanning data mappings");
@@ -1083,15 +1078,19 @@ fn count_data_mappings(
         ctx.report.clone(),
         metadata_root.nr_allocated + (data_root.nr_allocated / 8),
         move || {
-            mon_meta_sm.lock().unwrap().get_nr_allocated().unwrap()
-                + (mon_data_sm.lock().unwrap().get_nr_allocated().unwrap() / 8)
+            mon_meta_sm.get_nr_allocated().unwrap_or(0)
+                + (mon_data_sm.get_nr_allocated().unwrap_or(0) / 8)
         },
     );
 
     let summaries = count_data_mappings_(ctx, &metadata_sm, &data_sm, &roots, ignore_non_fatal)?;
     let summaries: Vec<NodeSummary> = roots
         .iter()
-        .map_while(|root| summaries.get(*root as u32).filter(|sum| sum.nr_errors == 0))
+        .map_while(|root| {
+            summaries
+                .get(&(*root as u32))
+                .filter(|sum| sum.nr_errors == 0)
+        })
         .cloned()
         .collect();
 
