@@ -27,6 +27,7 @@ use crate::thin::metadata_repair::is_superblock_consistent;
 use crate::thin::superblock::*;
 use crate::units::*;
 use crate::utils::prof::*;
+use crate::utils::ranged_bitset_iter::*;
 
 //------------------------------------------
 
@@ -573,6 +574,240 @@ fn verify_checksum(data: &[u8]) -> std::result::Result<(), NodeError> {
     }
 }
 
+#[inline(always)]
+fn convert_result<V>(r: nom::IResult<&[u8], V>) -> std::result::Result<(&[u8], V), NodeError> {
+    r.map_err(|_e| NodeError::IncompleteData)
+}
+
+fn examine_leaf_(
+    loc: u64,
+    data: &[u8],
+    ignore_non_fatal: bool,
+    data_sm_size: u64,
+    data_blocks: &mut Vec<u64>,
+) -> std::result::Result<NodeSummary, NodeError> {
+    use nom::{bytes::complete::take, number::complete::*};
+
+    verify_checksum(data)?;
+
+    let (i, header) = NodeHeader::unpack(data).map_err(|_e| NodeError::IncompleteData)?;
+
+    if header.is_leaf && header.value_size != BlockTime::disk_size() {
+        return Err(NodeError::ValueSizeMismatch);
+    }
+
+    let elt_size = header.value_size + 8;
+    if elt_size as usize * header.max_entries as usize + NODE_HEADER_SIZE > BLOCK_SIZE {
+        return Err(NodeError::MaxEntriesTooLarge);
+    }
+
+    if header.block != loc {
+        return Err(NodeError::BlockNrMismatch);
+    }
+
+    if header.nr_entries > header.max_entries {
+        return Err(NodeError::NumEntriesTooLarge);
+    }
+
+    if !ignore_non_fatal && header.max_entries % 3 != 0 {
+        return Err(NodeError::MaxEntriesNotDivisible);
+    }
+
+    let mut key_low = 0;
+    let mut key_high = 0;
+    let mut input = i;
+    if header.nr_entries > 0 {
+        let (i, k) = convert_result(le_u64(input))?;
+        input = i;
+        key_low = k;
+        key_high = k;
+
+        let mut last = k;
+        for idx in 1..header.nr_entries {
+            let (i, k) = convert_result(le_u64(input))?;
+            input = i;
+
+            if k < last {
+                return Err(NodeError::KeysOutOfOrder);
+            }
+            last = k;
+
+            if idx == header.nr_entries - 1 {
+                key_high = k;
+            }
+        }
+    }
+    let i = input;
+
+    let nr_free = header.max_entries - header.nr_entries;
+    let (i, _padding) = convert_result(take(nr_free * 8)(i))?;
+
+    let mut input = i;
+    let mut error_mappings = 0;
+    for _ in 0..header.nr_entries {
+        let (i, bt) = convert_result(BlockTime::unpack(input))?;
+        input = i;
+        if bt.block >= data_sm_size {
+            error_mappings += 1;
+            continue;
+        }
+        data_blocks.push(bt.block);
+    }
+
+    let sum = NodeSummary {
+        key_low,
+        key_high,
+        nr_mappings: header.nr_entries as u64 - error_mappings as u64,
+        nr_shared: 0, // Will be calculated later
+        nr_entries: header.nr_entries as u8 - error_mappings,
+        nr_errors: if error_mappings > 0 { 1 } else { 0 },
+    };
+
+    Ok(sum)
+}
+
+struct LeafHandler {
+    data_sm: Arc<RestrictedTwoAggregator>,
+    nodes: Arc<BatchedNodeMap>,
+    summaries: Arc<Mutex<HashMap<u32, NodeSummary>>>,
+    ignore_non_fatal: bool,
+    inc_batch: Vec<u64>,
+    summary_batch: Vec<(u32, NodeSummary)>,
+    updates: Vec<NodeUpdate>,
+}
+
+const INC_BATCH_SIZE: usize = 1024;
+const SUMMARY_BATCH_SIZE: usize = 1024;
+
+impl LeafHandler {
+    fn new(
+        data_sm: Arc<RestrictedTwoAggregator>,
+        nodes: Arc<BatchedNodeMap>,
+        summaries: Arc<Mutex<HashMap<u32, NodeSummary>>>,
+        ignore_non_fatal: bool,
+    ) -> Self {
+        Self {
+            data_sm,
+            nodes,
+            summaries,
+            ignore_non_fatal,
+            inc_batch: Vec::with_capacity(INC_BATCH_SIZE + 256),
+            summary_batch: Vec::with_capacity(SUMMARY_BATCH_SIZE + 256),
+            updates: Vec::new(),
+        }
+    }
+
+    fn flush_incs(&mut self) {
+        if self.inc_batch.is_empty() {
+            return;
+        }
+        self.data_sm.increment(&self.inc_batch);
+        self.inc_batch.clear();
+    }
+
+    fn maybe_flush_incs(&mut self) {
+        if self.inc_batch.len() >= INC_BATCH_SIZE {
+            self.flush_incs();
+        }
+    }
+
+    fn flush_summaries(&mut self) {
+        if self.summary_batch.is_empty() {
+            return;
+        }
+
+        let mut summaries = self.summaries.lock().unwrap();
+        for (loc, sum) in &self.summary_batch {
+            summaries.insert(*loc, sum.clone());
+        }
+        self.summary_batch.clear();
+    }
+
+    fn maybe_flush_summaries(&mut self) {
+        if self.summary_batch.len() >= SUMMARY_BATCH_SIZE {
+            self.flush_summaries();
+        }
+    }
+
+    fn flush_updates(&mut self) {
+        if !self.updates.is_empty() {
+            self.nodes.batch_update(std::mem::take(&mut self.updates));
+        }
+    }
+
+    fn maybe_flush_updates(&mut self) {
+        if self.updates.len() >= NODE_MAP_BATCH_SIZE {
+            self.flush_updates();
+        }
+    }
+
+    fn push_error(&mut self, loc: u32, e: NodeError) {
+        self.updates.push(NodeUpdate {
+            loc,
+            info: NodeInfo::Error(e),
+        });
+    }
+}
+
+impl ReadHandler for LeafHandler {
+    fn handle(&mut self, loc: u64, data: std::io::Result<&[u8]>) {
+        match data {
+            Ok(data) => {
+                // Allow under full nodes in this phase.  The under full
+                // property will be check later based on the path context.
+                let sum = examine_leaf_(
+                    loc,
+                    data,
+                    self.ignore_non_fatal,
+                    self.data_sm.get_nr_blocks() as u64,
+                    &mut self.inc_batch,
+                );
+                self.maybe_flush_incs();
+
+                match sum {
+                    Ok(sum) => {
+                        self.summary_batch.push((loc as u32, sum));
+                        self.maybe_flush_summaries();
+                    }
+                    Err(e) => {
+                        self.maybe_flush_updates();
+                        self.push_error(loc as u32, e);
+                    }
+                }
+            }
+            Err(_e) => {
+                self.maybe_flush_updates();
+                self.push_error(loc as u32, NodeError::IoError);
+            }
+        }
+    }
+
+    fn complete(&mut self) {
+        self.flush_incs();
+        self.flush_summaries();
+        self.flush_updates();
+    }
+}
+
+fn unpacker(
+    engine: Arc<dyn IoEngine>,
+    leaves: &mut dyn Iterator<Item = u64>,
+    data_sm: Arc<RestrictedTwoAggregator>,
+    nodes: Arc<BatchedNodeMap>,
+    summaries: Arc<Mutex<HashMap<u32, NodeSummary>>>,
+    ignore_non_fatal: bool,
+) -> Result<()> {
+    let io_block_size = 64 * 1024;
+    let buffer_size = 16 * 1024 * 1024; // 16m
+    let nr_io_blocks = buffer_size / io_block_size;
+    let mut buffers = BufferPool::new(nr_io_blocks, io_block_size);
+
+    let mut handler = LeafHandler::new(data_sm, nodes, summaries, ignore_non_fatal);
+    engine.read_blocks(&mut buffers, leaves, &mut handler)?;
+
+    Ok(())
+}
+
 fn read_internal_nodes(
     ctx: &Context,
     io_buffers: &mut BufferPool,
@@ -807,7 +1042,54 @@ fn count_mapped_blocks(
 
 //------------------------------------------
 
-fn unpacker(
+fn read_leaf_nodes(
+    ctx: &Context,
+    nodes: NodeMap,
+    data_sm: &Arc<RestrictedTwoAggregator>,
+    ignore_non_fatal: bool,
+) -> Result<(NodeMap, HashMap<u32, NodeSummary>)> {
+    const NR_UNPACKERS: usize = 4;
+
+    let leaves = nodes.leaf_nodes.clone();
+    let summaries = Arc::new(Mutex::new(HashMap::new()));
+    let batch_nodes = Arc::new(BatchedNodeMap::new(nodes));
+
+    // Kick off the unpackers
+    thread::scope(|s| {
+        let chunk_size = leaves.len().div_ceil(NR_UNPACKERS);
+        for i in 0..NR_UNPACKERS {
+            let l_begin = i * chunk_size;
+            let l_end = ((i + 1) * chunk_size).min(leaves.len());
+            let mut leaves = RangedBitsetIter::new(&leaves, l_begin..l_end);
+            let batch_nodes = batch_nodes.clone();
+            let data_sm = data_sm.clone();
+            let summaries = summaries.clone();
+
+            s.spawn(move || {
+                unpacker(
+                    ctx.engine.clone(),
+                    &mut leaves,
+                    data_sm,
+                    batch_nodes,
+                    summaries,
+                    ignore_non_fatal,
+                )
+            });
+        }
+    });
+
+    // extract the results
+    let nodes = Arc::into_inner(batch_nodes)
+        .unwrap()
+        .inner
+        .into_inner()
+        .unwrap();
+    let summaries = Arc::into_inner(summaries).unwrap().into_inner().unwrap();
+
+    Ok((nodes, summaries))
+}
+
+fn exclusive_unpacker(
     blocks_rx: &Arc<Mutex<mpsc::Receiver<Vec<Block>>>>,
     nodes_tx: SyncSender<Vec<Node<BlockTime>>>,
     node_map: Arc<Mutex<NodeMap>>,
@@ -849,49 +1131,6 @@ fn unpacker(
 
         if nodes_tx.send(nodes).is_err() {
             break;
-        }
-    }
-}
-
-fn summariser(
-    nodes_rx: mpsc::Receiver<Vec<Node<BlockTime>>>,
-    metadata_sm: &Arc<RestrictedTwoAggregator>,
-    data_sm: &Arc<RestrictedTwoAggregator>,
-    summaries: &Arc<Mutex<HashMap<u32, NodeSummary>>>,
-) {
-    let mut summaries = summaries.lock().unwrap();
-
-    loop {
-        let nodes = {
-            if let Ok(nodes) = nodes_rx.recv() {
-                nodes
-            } else {
-                break;
-            }
-        };
-
-        for n in nodes {
-            if let Node::Leaf {
-                keys,
-                values,
-                header,
-            } = n
-            {
-                {
-                    let blocks: Vec<u64> = values.iter().map(|v| v.block).collect();
-                    data_sm.increment(&blocks);
-                }
-
-                // summarize shared leaves in this phase
-                // TODO: Need to implement shared detection with Aggregator
-                if metadata_sm.get(header.block).unwrap_or(0) > 1 {
-                    let sum = NodeSummary::from_leaf(&keys, keys.len() as u64);
-                    summaries.insert(header.block as u32, sum);
-                }
-            } else {
-                // Do not report error here. The error will be captured
-                // in the second phase.
-            }
         }
     }
 }
@@ -940,101 +1179,6 @@ fn exclusive_leaves_summariser(
     }
 }
 
-fn read_leaf_nodes(
-    ctx: &Context,
-    nodes: NodeMap,
-    metadata_sm: &Arc<RestrictedTwoAggregator>,
-    data_sm: &Arc<RestrictedTwoAggregator>,
-    ignore_non_fatal: bool,
-) -> Result<(NodeMap, HashMap<u32, NodeSummary>)> {
-    const QUEUE_DEPTH: usize = 4;
-    const NR_UNPACKERS: usize = 4;
-
-    // Single IO thread reads vecs of blocks
-    // Many unpackers take the block vecs and turn them into btree nodes
-    // Single 'summariser' thread processes the nodes
-
-    // Build a vec of the leaf locations.  These will be in disk location
-    // order.
-    let mut leaves = Vec::with_capacity(nodes.nr_leaves as usize);
-    for loc in nodes.leaf_nodes.ones() {
-        leaves.push(loc as u64);
-    }
-
-    let (blocks_tx, blocks_rx) = mpsc::sync_channel::<Vec<Block>>(QUEUE_DEPTH);
-    let blocks_rx = Arc::new(Mutex::new(blocks_rx));
-
-    let (nodes_tx, nodes_rx) = mpsc::sync_channel::<Vec<Node<BlockTime>>>(QUEUE_DEPTH);
-
-    // Process chunks of leaves at once so the io engine can aggregate reads.
-    let summaries = Arc::new(Mutex::new(HashMap::new()));
-    let nodes = Arc::new(Mutex::new(nodes));
-
-    // Kick off the unpackers
-    let mut unpackers = Vec::with_capacity(NR_UNPACKERS);
-    for _i in 0..NR_UNPACKERS {
-        let blocks_rx = blocks_rx.clone();
-        let nodes_tx = nodes_tx.clone();
-        let node_map = nodes.clone();
-        unpackers.push(thread::spawn(move || {
-            unpacker(&blocks_rx, nodes_tx, node_map, ignore_non_fatal)
-        }));
-    }
-    drop(blocks_rx);
-    drop(nodes_tx);
-
-    // Kick off the summariser
-    let summariser_tid = {
-        let metadata_sm = metadata_sm.clone();
-        let data_sm = data_sm.clone();
-        let summaries = summaries.clone();
-        thread::spawn(move || {
-            summariser(nodes_rx, &metadata_sm, &data_sm, &summaries);
-        })
-    };
-
-    // IO is done in the main thread
-    let engine = ctx.engine.clone();
-    for c in leaves.chunks(1024) {
-        let mut bs = Vec::with_capacity(c.len());
-
-        // TODO: Retry blocks ignored by vectored io
-        if let Ok(blocks) = engine.read_many(c) {
-            for b in blocks {
-                if b.is_err() {
-                    continue;
-                }
-
-                let b = b.unwrap();
-                bs.push(b);
-            }
-
-            blocks_tx
-                .send(bs)
-                .expect("couldn't send blocks to unpacker");
-        } else {
-            let mut nodes = nodes.lock().unwrap();
-            for b in c {
-                let _ = nodes.insert_error(*b as u32, NodeError::IoError);
-            }
-        }
-    }
-
-    drop(blocks_tx);
-
-    // Wait for child threads
-    for tid in unpackers {
-        tid.join().expect("couldn't join unpacker");
-    }
-    summariser_tid.join().expect("couldn't join summariser");
-
-    // extract the results
-    let nodes = Arc::try_unwrap(nodes).unwrap().into_inner().unwrap();
-    let summaries = Arc::try_unwrap(summaries).unwrap().into_inner().unwrap();
-
-    Ok((nodes, summaries))
-}
-
 fn read_exclusive_leaves(
     ctx: &Context,
     nodes: NodeMap,
@@ -1078,7 +1222,7 @@ fn read_exclusive_leaves(
         let nodes_tx = nodes_tx.clone();
         let node_map = nodes.clone();
         unpackers.push(thread::spawn(move || {
-            unpacker(&blocks_rx, nodes_tx, node_map, ignore_non_fatal)
+            exclusive_unpacker(&blocks_rx, nodes_tx, node_map, ignore_non_fatal)
         }));
     }
     drop(blocks_rx);
@@ -1153,7 +1297,7 @@ fn count_data_mappings_(
 
     print_mem(&ctx.report, "memory usage before read_leaf_nodes");
     let start = std::time::Instant::now();
-    let (nodes, summaries) = read_leaf_nodes(ctx, nodes, metadata_sm, data_sm, ignore_non_fatal)?;
+    let (nodes, summaries) = read_leaf_nodes(ctx, nodes, data_sm, ignore_non_fatal)?;
     let duration = start.elapsed();
     print_mem(&ctx.report, "memory usage after read_leaf_nodes");
     ctx.report
