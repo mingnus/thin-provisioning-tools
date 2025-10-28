@@ -1,5 +1,6 @@
 use anyhow::{anyhow, Result};
 use fixedbitset::FixedBitSet;
+use rand::seq::SliceRandom;
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
@@ -12,13 +13,13 @@ use crate::commands::engine::*;
 use crate::grid_layout::GridLayout;
 use crate::io_engine::SECTOR_SHIFT;
 use crate::io_engine::*;
-use crate::pdata::btree::{self, *};
+use crate::pdata::btree::*;
 use crate::pdata::btree_utils::*;
 use crate::pdata::btree_walker::*;
 use crate::pdata::space_map::aggregator::*;
 use crate::pdata::space_map::common::*;
 use crate::pdata::space_map::*;
-use crate::pdata::unpack::unpack;
+use crate::pdata::unpack::*;
 use crate::report::{ProgressMonitor, Report};
 use crate::thin::block_time::BlockTime;
 use crate::thin::device_detail::DeviceDetail;
@@ -408,128 +409,225 @@ impl NodeMap {
 
 //------------------------------------------
 
-fn is_seen(loc: u32, metadata_sm: &Aggregator) -> Result<bool> {
-    let seen = metadata_sm.test_and_inc(&[loc as u64]);
-    Ok(seen.contains(0))
+struct NodeUpdate {
+    loc: u32,
+    info: NodeInfo,
 }
 
-// FIXME: split up this function
-fn read_node_(
-    ctx: &Context,
-    metadata_sm: &Aggregator,
-    b: &Block,
-    depth: usize,
-    ignore_non_fatal: bool,
-    nodes: &mut NodeMap,
-) {
-    // allow underfull nodes in the first pass
-    let node = match check_and_unpack_node::<u64>(b, ignore_non_fatal, true) {
-        Ok(n) => n,
-        Err(e) => {
-            // theoretically never fail
-            let _ = nodes.insert_error(b.loc as u32, e);
-            return;
+enum NodeInfo {
+    Leaf(),
+    Internal(InternalNodeInfo),
+    Error(NodeError),
+}
+
+const NODE_MAP_BATCH_SIZE: usize = 1024;
+
+struct BatchedNodeMap {
+    inner: Mutex<NodeMap>,
+}
+
+impl BatchedNodeMap {
+    fn new(inner: NodeMap) -> Self {
+        Self {
+            inner: Mutex::new(inner),
         }
-    };
+    }
 
-    use btree::Node::*;
-    if let Internal { keys, values, .. } = node {
-        let children = values.iter().map(|v| *v as u32).collect::<Vec<u32>>(); // FIXME: slow
-
-        // insert the node info in pre-order fashion to better detect loops in the path
-        let info = InternalNodeInfo { keys, children };
-
-        let _ = nodes.insert_internal_node(b.loc as u32, info);
-
-        // filter out previously visited nodes
-        let mut new_values = Vec::with_capacity(values.len());
-        for v in values {
-            if let Ok(seen) = is_seen(v as u32, metadata_sm) {
-                // Add the unread leaf if now it looks like an internal.
-                // Add the visited internal if now it looks like a leaf.
-                let node_type = nodes.get_type(v as u32);
-                let maybe_internal = depth > 0 && node_type == NodeType::Leaf;
-                let maybe_leaf = depth == 0 && node_type == NodeType::None;
-                if !seen || maybe_internal || maybe_leaf {
-                    new_values.push(v);
+    fn batch_update(&self, updates: Vec<NodeUpdate>) {
+        let mut guard = self.inner.lock().unwrap();
+        for update in updates {
+            match update.info {
+                NodeInfo::Leaf() => {
+                    let _ = guard.insert_leaf(update.loc);
+                }
+                NodeInfo::Internal(info) => {
+                    let _ = guard.insert_internal_node(update.loc, info);
+                }
+                NodeInfo::Error(error) => {
+                    let _ = guard.insert_error(update.loc, error);
                 }
             }
-        }
-        let values = new_values;
-
-        if depth == 0 {
-            for loc in values {
-                let _ = nodes.insert_leaf(loc as u32);
-            }
-        } else {
-            // we could error each child rather than the current node
-            match ctx.engine.read_many(&values) {
-                Ok(bs) => {
-                    for (i, b) in bs.iter().enumerate() {
-                        if let Ok(b) = b {
-                            read_node(ctx, metadata_sm, b, depth - 1, ignore_non_fatal, nodes);
-                        } else {
-                            // theoretically never fail
-                            let _ = nodes.insert_error(values[i] as u32, NodeError::IoError);
-                        }
-                    }
-                }
-                Err(_) => {
-                    // error every child node
-                    for loc in values {
-                        // theoretically never fail
-                        let _ = nodes.insert_error(loc as u32, NodeError::IoError);
-                    }
-                }
-            };
         }
     }
 }
 
-/// Reads a btree node and all internal btree nodes below it into the
-/// nodes parameter.  No errors are returned, instead the optional
-/// error field of the nodes will be filled in.
-fn read_node(
-    ctx: &Context,
-    metadata_sm: &Aggregator,
-    b: &Block,
-    depth: usize,
+//--------------------------------
+
+struct LayerHandler<'a> {
+    is_root: bool,
+    metadata_sm: &'a Aggregator,
     ignore_non_fatal: bool,
-    nodes: &mut NodeMap,
-) {
-    read_node_(ctx, metadata_sm, b, depth, ignore_non_fatal, nodes);
+    nodes: Arc<BatchedNodeMap>,
+    children: FixedBitSet,
+    updates: Vec<NodeUpdate>,
+}
+
+impl<'a> LayerHandler<'a> {
+    fn new(
+        is_root: bool,
+        metadata_sm: &'a Aggregator,
+        ignore_non_fatal: bool,
+        nodes: Arc<BatchedNodeMap>,
+    ) -> Self {
+        Self {
+            is_root,
+            metadata_sm,
+            ignore_non_fatal,
+            nodes,
+            children: FixedBitSet::with_capacity(metadata_sm.get_nr_blocks()),
+            updates: Vec::new(),
+        }
+    }
+
+    fn flush_updates(&mut self) {
+        if !self.updates.is_empty() {
+            self.nodes.batch_update(std::mem::take(&mut self.updates));
+        }
+    }
+
+    fn maybe_flush(&mut self) {
+        if self.updates.len() >= NODE_MAP_BATCH_SIZE {
+            self.flush_updates();
+        }
+    }
+
+    fn push_error(&mut self, loc: u32, e: NodeError) {
+        self.updates.push(NodeUpdate {
+            loc,
+            info: NodeInfo::Error(e),
+        });
+    }
+
+    fn push_internal(&mut self, loc: u32, info: InternalNodeInfo) {
+        self.updates.push(NodeUpdate {
+            loc,
+            info: NodeInfo::Internal(info),
+        });
+    }
+
+    fn get_children(self) -> FixedBitSet {
+        self.children
+    }
+}
+
+impl<'a> ReadHandler for LayerHandler<'a> {
+    fn handle(&mut self, loc: u64, data: std::io::Result<&[u8]>) {
+        self.maybe_flush();
+
+        match data {
+            Ok(data) => {
+                if let Err(e) = verify_checksum(data) {
+                    self.push_error(loc as u32, e);
+                    return;
+                }
+
+                let node = unpack_node_raw::<u64>(data, self.ignore_non_fatal, self.is_root);
+
+                if let Err(e) = &node {
+                    self.push_error(loc as u32, *e);
+                    return;
+                }
+
+                let node = node.unwrap();
+                if node.get_header().block != loc {
+                    self.push_error(loc as u32, NodeError::BlockNrMismatch);
+                    return;
+                }
+
+                if let Node::Internal { keys, values, .. } = node {
+                    // insert the node info in pre-order fashion to better detect loops in the path
+                    let children = values.iter().map(|v| *v as u32).collect::<Vec<u32>>();
+                    let info = InternalNodeInfo { keys, children };
+                    self.push_internal(loc as u32, info);
+
+                    let seen = self.metadata_sm.test_and_inc(&values);
+                    let nr_blocks = self.metadata_sm.get_nr_blocks() as u64;
+
+                    for (i, v) in values.iter().enumerate() {
+                        if !seen.contains(i) && *v < nr_blocks {
+                            self.children.insert(*v as usize);
+                        }
+                    }
+                }
+            }
+            Err(_) => {
+                self.push_error(loc as u32, NodeError::IoError);
+            }
+        }
+    }
+
+    fn complete(&mut self) {
+        self.flush_updates();
+    }
+}
+
+//------------------------------------------
+
+// Verify the checksum of a node
+fn verify_checksum(data: &[u8]) -> std::result::Result<(), NodeError> {
+    use crate::checksum;
+    match checksum::metadata_block_type(data) {
+        checksum::BT::NODE => Ok(()),
+        checksum::BT::UNKNOWN => Err(NodeError::ChecksumError),
+        _ => Err(NodeError::NotANode),
+    }
 }
 
 fn read_internal_nodes(
     ctx: &Context,
+    io_buffers: &mut BufferPool,
     metadata_sm: &Aggregator,
     root: u32,
     ignore_non_fatal: bool,
-    nodes: &mut NodeMap,
-) {
-    match is_seen(root, metadata_sm) {
-        Ok(true) | Err(_) => return,
-        _ => {}
+    nodes: Arc<BatchedNodeMap>,
+) -> Result<()> {
+    let nr_blocks = metadata_sm.get_nr_blocks();
+    if root as usize >= nr_blocks {
+        return Err(anyhow::anyhow!("block {} out of space map boundary", root));
     }
 
-    let depth = if let Ok(d) = get_depth::<BlockTime>(ctx.engine.as_ref(), root as u64) {
-        d
-    } else {
-        return;
-    };
+    let seen = metadata_sm.test_and_inc(&[root as u64]);
+    if seen.contains(0) {
+        return Ok(());
+    }
 
+    let depth = get_depth::<BlockTime>(ctx.engine.as_ref(), root as u64)?;
     if depth == 0 {
-        // The root will be skipped if it is a confirmed internal
-        let _ = nodes.insert_leaf(root);
-        return;
+        nodes.batch_update(vec![NodeUpdate {
+            loc: root,
+            info: NodeInfo::Leaf(),
+        }]);
+        return Ok(());
     }
 
-    if let Ok(b) = ctx.engine.read(root as u64) {
-        read_node(ctx, metadata_sm, &b, depth - 1, ignore_non_fatal, nodes);
-    } else {
-        // FIXME: factor out common code
-        let _ = nodes.insert_error(root, NodeError::IoError);
+    let mut current_layer = FixedBitSet::with_capacity(nr_blocks);
+    current_layer.insert(root as usize);
+
+    // Read the internal nodes, layer by layer.
+    let mut is_root = true;
+    for _d in (0..depth).rev() {
+        let mut handler = LayerHandler::new(is_root, metadata_sm, ignore_non_fatal, nodes.clone());
+        is_root = false;
+
+        ctx.engine.read_blocks(
+            io_buffers,
+            &mut current_layer.ones().map(|n| n as u64),
+            &mut handler,
+        )?;
+        current_layer = handler.get_children();
     }
+
+    // insert leaves
+    let blocks = current_layer
+        .ones()
+        .map(|loc| NodeUpdate {
+            loc: loc as u32,
+            info: NodeInfo::Leaf(),
+        })
+        .collect();
+    nodes.batch_update(blocks);
+
+    Ok(())
 }
 
 fn collect_nodes_in_use(
@@ -537,14 +635,56 @@ fn collect_nodes_in_use(
     metadata_sm: &Aggregator,
     roots: &[u64],
     ignore_non_fatal: bool,
-) -> NodeMap {
-    let mut nodes = NodeMap::new(ctx.engine.get_nr_blocks() as u32);
+) -> Result<NodeMap> {
+    const NR_THREADS: usize = 4;
 
-    for root in roots {
-        read_internal_nodes(ctx, metadata_sm, *root as u32, ignore_non_fatal, &mut nodes);
+    let nodes = NodeMap::new(metadata_sm.get_nr_blocks() as u32);
+
+    if roots.is_empty() {
+        return Ok(nodes);
     }
 
-    nodes
+    let batch_nodes = Arc::new(BatchedNodeMap::new(nodes));
+
+    let mut roots: Vec<u64> = roots.to_vec();
+    roots.shuffle(&mut rand::rng());
+
+    let chunk_size = roots.len().div_ceil(NR_THREADS);
+    let root_chunks: Vec<&[u64]> = roots.chunks(chunk_size).collect();
+
+    thread::scope(|s| {
+        for chunk in root_chunks {
+            let batch_nodes = batch_nodes.clone();
+            s.spawn(move || {
+                // FIXME: factor out
+                let io_block_size = BLOCK_SIZE;
+                let buffer_size = 16 * 1024 * 1024;
+                let nr_io_blocks = buffer_size / io_block_size;
+                let mut pool = BufferPool::new(nr_io_blocks, io_block_size);
+
+                for &root in chunk {
+                    // Allow errors in this phase. Node errors will be captured
+                    // later when counting the number of mapped blocks.
+                    let _ = read_internal_nodes(
+                        ctx,
+                        &mut pool,
+                        metadata_sm,
+                        root as u32,
+                        ignore_non_fatal,
+                        batch_nodes.clone(),
+                    );
+                }
+            });
+        }
+    });
+
+    let nodes = Arc::into_inner(batch_nodes)
+        .unwrap()
+        .inner
+        .into_inner()
+        .unwrap();
+
+    Ok(nodes)
 }
 
 //------------------------------------------
@@ -1006,7 +1146,7 @@ fn count_data_mappings_(
     ignore_non_fatal: bool,
 ) -> Result<HashMap<u32, NodeSummary>> {
     let start = std::time::Instant::now();
-    let nodes = collect_nodes_in_use(ctx, metadata_sm, roots, ignore_non_fatal);
+    let nodes = collect_nodes_in_use(ctx, metadata_sm, roots, ignore_non_fatal)?;
     let duration = start.elapsed();
     ctx.report
         .debug(&format!("reading internal nodes: {:?}", duration));
