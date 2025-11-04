@@ -1113,10 +1113,12 @@ impl ExclusiveLeafHandler {
 
         let mut summaries = self.summaries.lock().unwrap();
         for (loc, sum) in &self.summary_batch {
-            summaries
-                .entry(*loc)
-                .and_modify(|s| s.nr_shared = sum.nr_shared)
-                .or_insert(sum.clone());
+            summaries.entry(*loc).and_modify(|s| {
+                s.nr_mappings = sum.nr_mappings;
+                s.nr_shared = sum.nr_shared;
+                s.nr_entries = sum.nr_entries;
+                s.nr_errors = sum.nr_errors;
+            });
         }
         self.summary_batch.clear();
     }
@@ -1194,7 +1196,7 @@ fn examine_exclusive_leaf_(
     data_sm_size: u64,
     data_sm: &Arc<Aggregator>,
 ) -> std::result::Result<NodeSummary, NodeError> {
-    use nom::{bytes::complete::take, number::complete::*};
+    use nom::bytes::complete::take;
 
     verify_checksum(data)?;
 
@@ -1221,34 +1223,8 @@ fn examine_exclusive_leaf_(
         return Err(NodeError::MaxEntriesNotDivisible);
     }
 
-    let mut key_low = 0;
-    let mut key_high = 0;
-    let mut input = i;
-    if header.nr_entries > 0 {
-        let (i, k) = convert_result(le_u64(input))?;
-        input = i;
-        key_low = k;
-        key_high = k;
-
-        let mut last = k;
-        for idx in 1..header.nr_entries {
-            let (i, k) = convert_result(le_u64(input))?;
-            input = i;
-
-            if k < last {
-                return Err(NodeError::KeysOutOfOrder);
-            }
-            last = k;
-
-            if idx == header.nr_entries - 1 {
-                key_high = k;
-            }
-        }
-    }
-    let i = input;
-
-    let nr_free = header.max_entries - header.nr_entries;
-    let (i, _padding) = convert_result(take(nr_free * 8)(i))?;
+    // Skip examining the keys as we've done in the first pass
+    let (i, _padding) = convert_result(take(header.max_entries * 8)(i))?;
 
     let mut input = i;
     let mut error_mappings = 0;
@@ -1268,8 +1244,8 @@ fn examine_exclusive_leaf_(
     }
 
     let sum = NodeSummary {
-        key_low,
-        key_high,
+        key_low: 0,
+        key_high: 0,
         nr_mappings: header.nr_entries as u64 - error_mappings as u64,
         nr_shared,
         nr_entries: header.nr_entries as u8 - error_mappings,
