@@ -3,8 +3,6 @@ use fixedbitset::FixedBitSet;
 use rand::seq::SliceRandom;
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
-use std::fs::File;
-use std::io::Read;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -25,25 +23,8 @@ use crate::thin::device_detail::*;
 use crate::thin::metadata_repair::is_superblock_consistent;
 use crate::thin::superblock::*;
 use crate::utils::future::spawn_future;
+use crate::utils::prof::*;
 use crate::utils::ranged_bitset_iter::*;
-
-//------------------------------------------
-
-fn get_memory_usage() -> Result<usize, std::io::Error> {
-    let mut s = String::new();
-    File::open("/proc/self/statm")?.read_to_string(&mut s)?;
-    let pages = s
-        .split_whitespace()
-        .nth(1)
-        .unwrap()
-        .parse::<usize>()
-        .unwrap();
-    Ok((pages * 4096) / (1024 * 1024))
-}
-
-fn print_mem(report: &Report, msg: &str) {
-    report.debug(&format!("{}: {} meg", msg, get_memory_usage().unwrap()));
-}
 
 //------------------------------------------
 // minimum number of entries of a node with 64-bit mapped type
