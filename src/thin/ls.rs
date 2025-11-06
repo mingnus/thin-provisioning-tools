@@ -24,6 +24,7 @@ use crate::thin::metadata_repair::is_superblock_consistent;
 use crate::thin::superblock::*;
 use crate::units::*;
 use crate::utils::hashvec::HashVec;
+use crate::utils::prof::*;
 
 //------------------------------------------
 
@@ -1014,9 +1015,11 @@ fn count_data_mappings_(
     ctx.report
         .debug(&format!("reading internal nodes: {:?}", duration));
 
+    print_mem(&ctx.report, "memory usage before read_leaf_nodes");
     let start = std::time::Instant::now();
     let (nodes, summaries) = read_leaf_nodes(ctx, nodes, metadata_sm, data_sm, ignore_non_fatal)?;
     let duration = start.elapsed();
+    print_mem(&ctx.report, "memory usage after read_leaf_nodes");
     ctx.report
         .debug(&format!("reading leaf nodes: {:?}", duration));
 
@@ -1032,6 +1035,7 @@ fn count_data_mappings_(
     )?;
     let nr_exclusive_leaves = summaries.len() - nr_summarized;
     let duration = start.elapsed();
+    print_mem(&ctx.report, "memory usage after read_exclusive_leaves");
     ctx.report
         .debug(&format!("reading exclusive leaves: {:?}", duration));
 
