@@ -348,6 +348,119 @@ impl Region for U32Region {
 
 //--------------------------------
 
+#[derive(Default)]
+pub struct TwoBitRegion {
+    data: Vec<u8>, // 4 entries per byte
+    nr_allocated: u32,
+}
+
+impl TwoBitRegion {
+    fn get(&self, index: usize) -> u8 {
+        let byte_idx = index / 4;
+        let bit_offset = (index % 4) * 2;
+        (self.data[byte_idx] >> bit_offset) & 0b11
+    }
+
+    fn set(&mut self, index: usize, value: u8) {
+        let byte_idx = index / 4;
+        let bit_offset = (index % 4) * 2;
+        self.data[byte_idx] =
+            (self.data[byte_idx] & !(0b11 << bit_offset)) | ((value & 0b11) << bit_offset);
+    }
+}
+
+impl Region for TwoBitRegion {
+    fn increment(&mut self, blocks: &[u64]) {
+        if self.data.is_empty() {
+            self.data = vec![0; REGION_SIZE / 4];
+        }
+
+        for &block in blocks {
+            let b = block % REGION_SIZE as u64;
+            let current = self.get(b as usize);
+
+            if current < 2 {
+                if current == 0 {
+                    self.nr_allocated += 1;
+                }
+                self.set(b as usize, current + 1);
+            }
+        }
+    }
+
+    fn lookup(&self, block: u64, results: &mut [u32]) -> u64 {
+        let b = block % REGION_SIZE as u64;
+        let e = (b as usize + results.len()).min(REGION_SIZE);
+
+        if self.data.is_empty() {
+            // All zeroes
+            for i in (b as usize)..e {
+                results[i - b as usize] = 0;
+            }
+            return e as u64 - b;
+        }
+
+        for i in (b as usize)..e {
+            results[i - b as usize] = self.get(i) as u32;
+        }
+        e as u64 - b
+    }
+
+    fn set(&mut self, pairs: &[(u64, u32)]) {
+        if self.data.is_empty() {
+            self.data = vec![0; REGION_SIZE / 4];
+        }
+
+        for &(block, rc) in pairs {
+            let b = block % REGION_SIZE as u64;
+            let rc_before = if self.data.is_empty() {
+                0
+            } else {
+                self.get(b as usize)
+            };
+            self.set(b as usize, rc.min(2) as u8);
+
+            if rc_before == 0 && rc != 0 {
+                self.nr_allocated += 1;
+            } else if rc_before != 0 && rc == 0 {
+                self.nr_allocated -= 1;
+            }
+        }
+    }
+
+    fn test_and_inc(&mut self, blocks: &[u64], results: &mut FixedBitSet, offset: usize) {
+        if self.data.is_empty() {
+            self.data = vec![0; REGION_SIZE / 4];
+        }
+
+        for (i, &block) in blocks.iter().enumerate() {
+            let b = block % REGION_SIZE as u64;
+            let current_rc = self.get(b as usize);
+            results.set(offset + i, current_rc > 0);
+            if current_rc < 2 {
+                if current_rc == 0 {
+                    self.nr_allocated += 1;
+                }
+                self.set(b as usize, current_rc + 1);
+            }
+        }
+    }
+
+    fn rep_size(&self) -> usize {
+        if self.data.is_empty() {
+            0
+        } else {
+            REGION_SIZE / 4
+        }
+    }
+
+    fn nr_allocated(&self) -> u32 {
+        self.nr_allocated
+    }
+}
+
+//--------------------------------
+
 /// Aggregates reference count increments across multiple regions.
 ///
 /// The `Aggregator` is designed to efficiently collect batches of reference count
@@ -771,6 +884,7 @@ impl<R: Region> SpaceMap for AggregatorImpl<R> {
 }
 
 pub type Aggregator = AggregatorImpl<U32Region>;
+pub type TwoBitAggregator = AggregatorImpl<TwoBitRegion>;
 
 //--------------------------------
 
