@@ -8,7 +8,18 @@ use crate::pdata::space_map::base::*;
 
 const REGION_SIZE: usize = 1024;
 
-enum Rep {
+pub trait Region: Default {
+    fn increment(&mut self, blocks: &[u64]);
+    fn lookup(&self, block: u64, results: &mut [u32]) -> u64;
+    fn set(&mut self, pairs: &[(u64, u32)]);
+    fn test_and_inc(&mut self, blocks: &[u64], results: &mut FixedBitSet, offset: usize);
+    fn rep_size(&self) -> usize;
+    fn nr_allocated(&self) -> u32;
+}
+
+//--------------------------------
+
+enum U32Rep {
     NoCounts,
     Bits(FixedBitSet),
     U8s(Vec<u8>),
@@ -16,9 +27,9 @@ enum Rep {
     U32s(Vec<u32>),
 }
 
-use Rep::*;
+use U32Rep::*;
 
-impl Rep {
+impl U32Rep {
     fn upgrade(&self) -> Self {
         match self {
             NoCounts => Bits(FixedBitSet::with_capacity(REGION_SIZE)),
@@ -38,12 +49,12 @@ impl Rep {
     }
 }
 
-struct Region {
-    rep: Rep,
+pub struct U32Region {
+    rep: U32Rep,
     nr_allocated: u32,
 }
 
-impl Default for Region {
+impl Default for U32Region {
     fn default() -> Self {
         Self {
             rep: NoCounts,
@@ -59,7 +70,7 @@ enum IncResult {
     NeedUpgrade(usize),
 }
 
-impl Region {
+impl U32Region {
     fn increment_(&mut self, blocks: &[u64]) -> IncResult {
         assert!(!blocks.is_empty());
 
@@ -113,21 +124,6 @@ impl Region {
         }
 
         IncResult::Success
-    }
-
-    fn increment(&mut self, blocks: &[u64]) {
-        use IncResult::*;
-
-        let mut idx = 0;
-        loop {
-            match self.increment_(&blocks[idx..]) {
-                Success => break,
-                NeedUpgrade(i) => {
-                    self.rep = self.rep.upgrade();
-                    idx += i;
-                }
-            }
-        }
     }
 
     fn test_and_inc_(
@@ -192,55 +188,6 @@ impl Region {
         }
     }
 
-    pub fn test_and_inc(&mut self, blocks: &[u64], results: &mut FixedBitSet, offset: usize) {
-        let mut processed = 0;
-
-        while processed < blocks.len() {
-            match self.test_and_inc_(&blocks[processed..], results, offset + processed) {
-                IncResult::Success => break,
-                IncResult::NeedUpgrade(i) => {
-                    self.rep = self.rep.upgrade();
-                    processed += i;
-                }
-            }
-        }
-    }
-
-    fn lookup(&self, block: u64, results: &mut [u32]) -> u64 {
-        let b = block % REGION_SIZE as u64;
-        let e = (b as usize + results.len()).min(REGION_SIZE);
-
-        match &self.rep {
-            NoCounts => {
-                // All zeroes
-                for i in (b as usize)..e {
-                    results[i - b as usize] = 0;
-                }
-            }
-            Bits(bits) => {
-                for i in (b as usize)..e {
-                    results[i - b as usize] = if bits.contains(i) { 1 } else { 0 };
-                }
-            }
-            U8s(counts) => {
-                for i in (b as usize)..e {
-                    results[i - b as usize] = counts[i] as u32;
-                }
-            }
-            U16s(counts) => {
-                for i in (b as usize)..e {
-                    results[i - b as usize] = counts[i] as u32;
-                }
-            }
-            U32s(counts) => {
-                for i in (b as usize)..e {
-                    results[i - b as usize] = counts[i];
-                }
-            }
-        }
-        e as u64 - b
-    }
-
     fn set_(&mut self, pairs: &[(u64, u32)]) -> IncResult {
         for (i, &(block, ref_count)) in pairs.iter().enumerate() {
             let b = block % REGION_SIZE as u64;
@@ -303,9 +250,75 @@ impl Region {
         }
         IncResult::Success
     }
+}
+
+impl Region for U32Region {
+    fn increment(&mut self, blocks: &[u64]) {
+        use IncResult::*;
+
+        let mut idx = 0;
+        loop {
+            match self.increment_(&blocks[idx..]) {
+                Success => break,
+                NeedUpgrade(i) => {
+                    self.rep = self.rep.upgrade();
+                    idx += i;
+                }
+            }
+        }
+    }
+
+    fn test_and_inc(&mut self, blocks: &[u64], results: &mut FixedBitSet, offset: usize) {
+        let mut processed = 0;
+
+        while processed < blocks.len() {
+            match self.test_and_inc_(&blocks[processed..], results, offset + processed) {
+                IncResult::Success => break,
+                IncResult::NeedUpgrade(i) => {
+                    self.rep = self.rep.upgrade();
+                    processed += i;
+                }
+            }
+        }
+    }
+
+    fn lookup(&self, block: u64, results: &mut [u32]) -> u64 {
+        let b = block % REGION_SIZE as u64;
+        let e = (b as usize + results.len()).min(REGION_SIZE);
+
+        match &self.rep {
+            NoCounts => {
+                // All zeroes
+                for i in (b as usize)..e {
+                    results[i - b as usize] = 0;
+                }
+            }
+            Bits(bits) => {
+                for i in (b as usize)..e {
+                    results[i - b as usize] = if bits.contains(i) { 1 } else { 0 };
+                }
+            }
+            U8s(counts) => {
+                for i in (b as usize)..e {
+                    results[i - b as usize] = counts[i] as u32;
+                }
+            }
+            U16s(counts) => {
+                for i in (b as usize)..e {
+                    results[i - b as usize] = counts[i] as u32;
+                }
+            }
+            U32s(counts) => {
+                for i in (b as usize)..e {
+                    results[i - b as usize] = counts[i];
+                }
+            }
+        }
+        e as u64 - b
+    }
 
     /// Name clash with RefCount.set()
-    pub fn set(&mut self, pairs: &[(u64, u32)]) {
+    fn set(&mut self, pairs: &[(u64, u32)]) {
         let mut processed = 0;
         while processed < pairs.len() {
             match self.set_(&pairs[processed..]) {
@@ -327,7 +340,13 @@ impl Region {
             U32s(_) => REGION_SIZE * 4,
         }
     }
+
+    fn nr_allocated(&self) -> u32 {
+        self.nr_allocated
+    }
 }
+
+//--------------------------------
 
 /// Aggregates reference count increments across multiple regions.
 ///
@@ -357,13 +376,13 @@ impl Region {
 ///
 /// - **Batch Processing:** Aggregating increments in larger batches can improve
 ///   cache locality and reduce synchronization costs.
-pub struct Aggregator {
+pub struct AggregatorImpl<R: Region> {
     nr_entries: usize,
-    regions: Vec<Mutex<Region>>,
+    regions: Vec<Mutex<R>>,
     nr_allocated: Mutex<u64>,
 }
 
-impl Aggregator {
+impl<R: Region> AggregatorImpl<R> {
     /// Creates a new `Aggregator` with the specified number of entries.
     ///
     /// The number of regions is determined based on the `REGION_SIZE`. Each
@@ -384,9 +403,7 @@ impl Aggregator {
     /// ```
     pub fn new(nr_entries: usize) -> Self {
         let nr_regions = nr_entries.div_ceil(REGION_SIZE);
-        let regions = (0..nr_regions)
-            .map(|_| Mutex::new(Region::default()))
-            .collect();
+        let regions = (0..nr_regions).map(|_| Mutex::new(R::default())).collect();
         Self {
             nr_entries,
             regions,
@@ -598,7 +615,7 @@ impl Aggregator {
     /// The callback is invoked with (global block number, self count, other count).
     ///
     /// Panics if the two aggregators do not manage the same number of entries.
-    pub fn diff<F>(&self, other: &Aggregator, mut f: F)
+    pub fn diff<F>(&self, other: &AggregatorImpl<R>, mut f: F)
     where
         F: FnMut(u64, u32, u32),
     {
@@ -636,7 +653,7 @@ impl Aggregator {
         let mut total = 0;
         for i in 0..self.regions.len() {
             let region = self.regions[i].lock().unwrap();
-            total += std::mem::size_of::<Mutex<Region>>();
+            total += std::mem::size_of::<Mutex<R>>();
             total += region.rep_size();
         }
         total
@@ -652,9 +669,9 @@ impl Aggregator {
         }
 
         let mut region = self.regions[region_idx as usize].lock().unwrap();
-        let allocated_before = region.nr_allocated;
+        let allocated_before = region.nr_allocated();
         region.increment(blocks);
-        (region.nr_allocated - allocated_before) as u64
+        (region.nr_allocated() - allocated_before) as u64
     }
 
     fn process_region_test_and_inc(
@@ -669,9 +686,9 @@ impl Aggregator {
         }
 
         let mut region = self.regions[region_idx as usize].lock().unwrap();
-        let allocated_before = region.nr_allocated;
+        let allocated_before = region.nr_allocated();
         region.test_and_inc(blocks, results, results_offset);
-        (region.nr_allocated - allocated_before) as u64
+        (region.nr_allocated() - allocated_before) as u64
     }
 
     fn process_region_set(&self, region_idx: u64, pairs: &[(u64, u32)]) -> (u64, u64) {
@@ -680,13 +697,13 @@ impl Aggregator {
         }
 
         let mut region = self.regions[region_idx as usize].lock().unwrap();
-        let allocated_before = region.nr_allocated;
+        let allocated_before = region.nr_allocated();
         region.set(pairs);
 
-        if region.nr_allocated >= allocated_before {
-            ((region.nr_allocated - allocated_before) as u64, 0)
+        if region.nr_allocated() >= allocated_before {
+            ((region.nr_allocated() - allocated_before) as u64, 0)
         } else {
-            (0, (allocated_before - region.nr_allocated) as u64)
+            (0, (allocated_before - region.nr_allocated()) as u64)
         }
     }
 
@@ -701,7 +718,7 @@ impl Aggregator {
     }
 }
 
-impl RefCount for Aggregator {
+impl<R: Region> RefCount for AggregatorImpl<R> {
     fn get_nr_blocks(&self) -> Result<u64> {
         Ok(self.get_nr_blocks() as u64)
     }
@@ -729,7 +746,7 @@ impl RefCount for Aggregator {
 }
 
 // FIXME: only doing this as a stop gap solution
-impl SpaceMap for Aggregator {
+impl<R: Region> SpaceMap for AggregatorImpl<R> {
     fn get_nr_allocated(&self) -> Result<u64> {
         let nr_allocated = self.nr_allocated.lock().unwrap();
         Ok(*nr_allocated)
@@ -753,6 +770,8 @@ impl SpaceMap for Aggregator {
     }
 }
 
+pub type Aggregator = AggregatorImpl<U32Region>;
+
 //--------------------------------
 
 #[cfg(test)]
@@ -761,7 +780,7 @@ mod tests {
     use std::sync::Arc;
     use std::thread;
 
-    fn from_rep(rep: Rep) -> Region {
+    fn from_rep(rep: U32Rep) -> U32Region {
         let nr_allocated = match &rep {
             NoCounts => 0,
             Bits(bits) => bits.count_ones(..),
@@ -770,12 +789,12 @@ mod tests {
             U32s(counts) => counts.iter().filter(|&x| *x != 0).count(),
         } as u32;
 
-        Region { rep, nr_allocated }
+        U32Region { rep, nr_allocated }
     }
 
     #[test]
     fn test_initial_no_counts() {
-        let mut region = Region::default();
+        let mut region = U32Region::default();
         let blocks = [1, 2, 3];
         let result = region.increment_(&blocks);
         assert!(matches!(result, IncResult::NeedUpgrade(0)));
@@ -806,7 +825,7 @@ mod tests {
 
     #[test]
     fn test_full_upgrade_path() {
-        let mut region = Region::default();
+        let mut region = U32Region::default();
         // Initial increment should request upgrade
         let result = region.increment_(&[1]);
         assert!(matches!(result, IncResult::NeedUpgrade(0)));
@@ -892,7 +911,7 @@ mod tests {
 
     #[test]
     fn test_region_lookup_no_counts() {
-        let region = Region::default();
+        let region = U32Region::default();
         let mut results = vec![0; 10];
         let blocks_read = region.lookup(5, &mut results);
         assert_eq!(blocks_read, 10);
@@ -995,7 +1014,7 @@ mod tests {
 
     #[test]
     fn test_region_test_and_inc_no_counts() {
-        let mut region = Region::default();
+        let mut region = U32Region::default();
         let blocks = vec![1, 2, 3];
         let mut results = FixedBitSet::with_capacity(3);
         region.test_and_inc(&blocks, &mut results, 0);
@@ -1122,7 +1141,7 @@ mod tests {
 
     #[test]
     fn test_region_set_no_counts() {
-        let mut region = Region::default();
+        let mut region = U32Region::default();
         let pairs = vec![(1, 0), (2, 1), (3, 2)];
         region.set(&pairs);
 
