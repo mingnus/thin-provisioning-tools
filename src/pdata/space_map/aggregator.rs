@@ -206,43 +206,6 @@ impl Region {
         }
     }
 
-    /// Retrieves the reference counts for a range of blocks.
-    ///
-    /// This method allows you to look up the reference counts for a contiguous range of blocks,
-    /// starting from the specified `begin` block. It fills the provided `results` slice with
-    /// the reference counts and returns the number of blocks actually processed.
-    ///
-    /// # Arguments
-    ///
-    /// * `begin` - The starting block number to look up.
-    /// * `results` - A mutable slice to store the retrieved reference counts. The length of this
-    ///   slice determines the maximum number of blocks to look up.
-    ///
-    /// # Returns
-    ///
-    /// Returns the number of blocks actually processed. This may be less than `results.len()` if
-    /// the range extends beyond the end of the Aggregator's entries.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use thinp::pdata::space_map::aggregator::Aggregator;
-    ///
-    /// let aggregator = Aggregator::new(1000);
-    /// // ... (assume some increments have been performed)
-    ///
-    /// let mut results = vec![0; 10];
-    /// let blocks_read = aggregator.lookup(500, &mut results);
-    /// println!("Read {} blocks, first few counts: {:?}", blocks_read, &results[..3]);
-    /// ```
-    ///
-    /// # Notes
-    ///
-    /// - If `begin` is beyond the last entry in the Aggregator, this method will return 0 and
-    ///   leave `results` unchanged.
-    /// - The method will read up to `results.len()` blocks, but may read fewer if the end of
-    ///   the Aggregator's range is reached.
-    /// - This method is thread-safe and can be called concurrently with `increment` operations.
     fn lookup(&self, block: u64, results: &mut [u32]) -> u64 {
         let b = block % REGION_SIZE as u64;
         let e = (b as usize + results.len()).min(REGION_SIZE);
@@ -495,6 +458,43 @@ impl Aggregator {
         self.nr_entries
     }
 
+    /// Retrieves the reference counts for a range of blocks.
+    ///
+    /// This method allows you to look up the reference counts for a contiguous range of blocks,
+    /// starting from the specified `begin` block. It fills the provided `results` slice with
+    /// the reference counts and returns the number of blocks actually processed.
+    ///
+    /// # Arguments
+    ///
+    /// * `begin` - The starting block number to look up.
+    /// * `results` - A mutable slice to store the retrieved reference counts. The length of this
+    ///   slice determines the maximum number of blocks to look up.
+    ///
+    /// # Returns
+    ///
+    /// Returns the number of blocks actually processed. This may be less than `results.len()` if
+    /// the range extends beyond the end of the Aggregator's entries.
+    ///
+    /// # Examples
+    ///
+    /// ```
+    /// use thinp::pdata::space_map::aggregator::Aggregator;
+    ///
+    /// let aggregator = Aggregator::new(1000);
+    /// // ... (assume some increments have been performed)
+    ///
+    /// let mut results = vec![0; 10];
+    /// let blocks_read = aggregator.lookup(500, &mut results);
+    /// println!("Read {} blocks, first few counts: {:?}", blocks_read, &results[..3]);
+    /// ```
+    ///
+    /// # Notes
+    ///
+    /// - If `begin` is beyond the last entry in the Aggregator, this method will return 0 and
+    ///   leave `results` unchanged.
+    /// - The method will read up to `results.len()` blocks, but may read fewer if the end of
+    ///   the Aggregator's range is reached.
+    /// - This method is thread-safe and can be called concurrently with `increment` operations.
     pub fn lookup(&self, begin: u64, results: &mut [u32]) -> u64 {
         if begin >= self.nr_entries as u64 {
             return 0;
