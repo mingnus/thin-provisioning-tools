@@ -348,6 +348,124 @@ impl Region for U32Region {
 
 //--------------------------------
 
+#[derive(Default)]
+pub struct RestrictedTwoRegion {
+    data: Vec<u8>, // 4 entries per byte
+    nr_allocated: u32,
+}
+
+impl RestrictedTwoRegion {
+    fn get_(&self, index: usize) -> u8 {
+        let byte_idx = index / 4;
+        let bit_offset = (index % 4) * 2;
+        (self.data[byte_idx] >> bit_offset) & 0b11
+    }
+
+    fn set_(&mut self, index: usize, value: u8) {
+        let byte_idx = index / 4;
+        let bit_offset = (index % 4) * 2;
+        self.data[byte_idx] =
+            (self.data[byte_idx] & !(0b11 << bit_offset)) | ((value & 0b11) << bit_offset);
+    }
+}
+
+impl Region for RestrictedTwoRegion {
+    fn increment(&mut self, blocks: &[u64]) {
+        if self.data.is_empty() {
+            self.data = vec![0; REGION_SIZE / 4];
+        }
+
+        for &block in blocks {
+            let b = block % REGION_SIZE as u64;
+            let current = self.get_(b as usize);
+
+            if current < 2 {
+                if current == 0 {
+                    self.nr_allocated += 1;
+                }
+                self.set_(b as usize, current + 1);
+            }
+        }
+    }
+
+    fn lookup(&self, block: u64, results: &mut [u32]) -> u64 {
+        let b = block % REGION_SIZE as u64;
+        let e = (b as usize + results.len()).min(REGION_SIZE);
+
+        if self.data.is_empty() {
+            // All zeroes
+            results[0..(e - b as usize)].fill(0);
+            return e as u64 - b;
+        }
+
+        for i in (b as usize)..e {
+            results[i - b as usize] = self.get_(i) as u32;
+        }
+        e as u64 - b
+    }
+
+    fn set(&mut self, pairs: &[(u64, u32)]) {
+        for &(block, rc) in pairs {
+            let b = block % REGION_SIZE as u64;
+            let rc_before = if self.data.is_empty() {
+                0
+            } else {
+                self.get_(b as usize)
+            };
+
+            let rc_saturated = rc.min(2) as u8;
+            if rc_saturated == rc_before {
+                continue;
+            }
+
+            if self.data.is_empty() {
+                self.data = vec![0; REGION_SIZE / 4];
+            }
+
+            self.set_(b as usize, rc_saturated);
+
+            if rc_before == 0 {
+                // rc changed from 0, meaning the new rc > 0
+                self.nr_allocated += 1;
+            } else if rc_before != 0 && rc_saturated == 0 {
+                self.nr_allocated -= 1;
+            }
+        }
+    }
+
+    fn test_and_inc(&mut self, blocks: &[u64], results: &mut FixedBitSet, offset: usize) {
+        if self.data.is_empty() {
+            self.data = vec![0; REGION_SIZE / 4];
+        }
+
+        for (i, &block) in blocks.iter().enumerate() {
+            let b = block % REGION_SIZE as u64;
+            let current_rc = self.get_(b as usize);
+            results.set(offset + i, current_rc > 0);
+            if current_rc < 2 {
+                if current_rc == 0 {
+                    self.nr_allocated += 1;
+                }
+                self.set_(b as usize, current_rc + 1);
+            }
+        }
+    }
+
+    fn rep_size(&self) -> usize {
+        if self.data.is_empty() {
+            0
+        } else {
+            REGION_SIZE / 4
+        }
+    }
+
+    fn nr_allocated(&self) -> u32 {
+        self.nr_allocated
+    }
+}
+
+//--------------------------------
+
 /// Aggregates reference count increments across multiple regions.
 ///
 /// The `Aggregator` is designed to efficiently collect batches of reference count
@@ -771,6 +889,7 @@ impl<R: Region> SpaceMap for AggregatorImpl<R> {
 }
 
 pub type Aggregator = AggregatorImpl<U32Region>;
+pub type RestrictedTwoAggregator = AggregatorImpl<RestrictedTwoRegion>;
 
 //--------------------------------
 
@@ -1345,6 +1464,109 @@ mod tests {
         // Set all allocated blocks to zero
         aggregator.set_batch(&[(2, 0), (3, 0), (4, 0), (5, 0), (6, 0)]);
         assert_eq!(aggregator.get_nr_allocated().unwrap(), 0);
+    }
+}
+
+//--------------------------------
+
+#[cfg(test)]
+mod restricted_two_aggregator_tests {
+    use super::*;
+
+    #[test]
+    fn test_region_default() {
+        let region = RestrictedTwoRegion::default();
+        assert_eq!(region.nr_allocated(), 0);
+        assert_eq!(region.rep_size(), 0);
+        assert!(region.data.is_empty());
+    }
+
+    #[test]
+    fn test_region_increment() {
+        let mut region = RestrictedTwoRegion::default();
+        region.increment(&[0, 1, 2, 3]);
+
+        assert_eq!(region.nr_allocated(), 4);
+
+        let mut results = vec![0; 4];
+        assert_eq!(region.lookup(0, &mut results), 4);
+        assert_eq!(results, vec![1, 1, 1, 1]);
+    }
+
+    #[test]
+    fn test_region_saturating_increment() {
+        let mut region = RestrictedTwoRegion::default();
+
+        region.increment(&[10, 10, 10, 10]);
+
+        assert_eq!(region.nr_allocated(), 1);
+
+        let mut results = vec![0; REGION_SIZE];
+        region.lookup(0, &mut results);
+        assert!(results[0..10].iter().all(|v| *v == 0));
+        assert_eq!(results[10], 2);
+        assert!(results[11..].iter().all(|v| *v == 0));
+    }
+
+    #[test]
+    fn test_region_saturating_set() {
+        let mut region = RestrictedTwoRegion::default();
+        region.set(&[(0, 16), (1, 32), (2, 64), (3, 128)]);
+
+        assert_eq!(region.nr_allocated(), 4);
+
+        let mut results = vec![0; REGION_SIZE];
+        assert_eq!(region.lookup(0, &mut results), REGION_SIZE as u64);
+        assert!(results[0..4].iter().all(|v| *v == 2));
+        assert!(results[4..].iter().all(|v| *v == 0));
+    }
+
+    #[test]
+    fn test_region_allocation_tracking_with_set() {
+        let mut region = RestrictedTwoRegion::default();
+
+        region.set(&[(10, 1), (11, 2), (12, 1)]);
+        assert_eq!(region.nr_allocated(), 3);
+
+        // Free one allocation
+        region.set(&[(10, 0)]);
+        assert_eq!(region.nr_allocated(), 2);
+        let mut results = vec![0u32; REGION_SIZE];
+        assert_eq!(region.lookup(10, &mut results[..1]), 1);
+        assert_eq!(results[0], 0);
+
+        // Update allocation
+        region.set(&[(11, 1)]);
+        assert_eq!(region.nr_allocated(), 2);
+        assert_eq!(region.lookup(11, &mut results[..1]), 1);
+        assert_eq!(results[0], 1);
+
+        // Free all
+        region.set(&[(11, 0), (12, 0)]);
+        assert_eq!(region.nr_allocated(), 0);
+        assert_eq!(region.lookup(0, &mut results), REGION_SIZE as u64);
+        assert!(results.iter().all(|v| *v == 0));
+    }
+
+    #[test]
+    fn test_region_test_and_inc() {
+        let mut region = RestrictedTwoRegion::default();
+
+        let mut results = FixedBitSet::with_capacity(10);
+        region.test_and_inc(&[1, 2, 3], &mut results, 3);
+        assert!(results.is_clear());
+        assert_eq!(region.nr_allocated(), 3);
+
+        region.test_and_inc(&[2, 3, 4], &mut results, 3);
+        assert!(!results.contains_any_in_range(0..3));
+        assert!(results.contains_all_in_range(3..5));
+        assert!(!results.contains_any_in_range(5..10));
+        assert_eq!(region.nr_allocated(), 4);
+
+        let mut lookup_results = vec![0u32; REGION_SIZE];
+        assert_eq!(region.lookup(0, &mut lookup_results), REGION_SIZE as u64);
+        assert_eq!(&lookup_results[0..5], &[0, 1, 2, 2, 1]);
+        assert!(lookup_results[5..].iter().all(|v| *v == 0));
     }
 }
 
