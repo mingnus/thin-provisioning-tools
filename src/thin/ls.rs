@@ -436,7 +436,7 @@ impl BatchedNodeMap {
 
 struct LayerHandler<'a> {
     is_root: bool,
-    metadata_sm: &'a Aggregator,
+    metadata_sm: &'a TwoBitAggregator,
     ignore_non_fatal: bool,
     nodes: Arc<BatchedNodeMap>,
     children: FixedBitSet,
@@ -446,7 +446,7 @@ struct LayerHandler<'a> {
 impl<'a> LayerHandler<'a> {
     fn new(
         is_root: bool,
-        metadata_sm: &'a Aggregator,
+        metadata_sm: &'a TwoBitAggregator,
         ignore_non_fatal: bool,
         nodes: Arc<BatchedNodeMap>,
     ) -> Self {
@@ -648,7 +648,7 @@ fn examine_leaf_(
 }
 
 struct LeafHandler {
-    data_sm: Arc<Aggregator>,
+    data_sm: Arc<TwoBitAggregator>,
     nodes: Arc<BatchedNodeMap>,
     summaries: Arc<Mutex<HashMap<u32, NodeSummary>>>,
     ignore_non_fatal: bool,
@@ -662,7 +662,7 @@ const SUMMARY_BATCH_SIZE: usize = 1024;
 
 impl LeafHandler {
     fn new(
-        data_sm: Arc<Aggregator>,
+        data_sm: Arc<TwoBitAggregator>,
         nodes: Arc<BatchedNodeMap>,
         summaries: Arc<Mutex<HashMap<u32, NodeSummary>>>,
         ignore_non_fatal: bool,
@@ -780,7 +780,7 @@ impl ReadHandler for LeafHandler {
 fn unpacker(
     engine: Arc<dyn IoEngine>,
     leaves: &mut dyn Iterator<Item = u64>,
-    data_sm: Arc<Aggregator>,
+    data_sm: Arc<TwoBitAggregator>,
     nodes: Arc<BatchedNodeMap>,
     summaries: Arc<Mutex<HashMap<u32, NodeSummary>>>,
     ignore_non_fatal: bool,
@@ -799,7 +799,7 @@ fn unpacker(
 fn read_internal_nodes(
     ctx: &Context,
     io_buffers: &mut BufferPool,
-    metadata_sm: &Aggregator,
+    metadata_sm: &TwoBitAggregator,
     root: u32,
     ignore_non_fatal: bool,
     nodes: Arc<BatchedNodeMap>,
@@ -855,7 +855,7 @@ fn read_internal_nodes(
 
 fn collect_nodes_in_use(
     ctx: &Context,
-    metadata_sm: &Aggregator,
+    metadata_sm: &TwoBitAggregator,
     roots: &[u64],
     ignore_non_fatal: bool,
 ) -> Result<NodeMap> {
@@ -922,7 +922,7 @@ fn summarize_tree(
     root: u32,
     is_root: bool,
     nodes: &NodeMap,
-    metadata_sm: &Aggregator,
+    metadata_sm: &TwoBitAggregator,
     summaries: &mut HashMap<u32, NodeSummary>,
     ignore_non_fatal: bool,
 ) -> NodeSummary {
@@ -1008,7 +1008,7 @@ fn summarize_tree(
 fn count_mapped_blocks(
     roots: &[u64],
     nodes: &NodeMap,
-    metadata_sm: &Aggregator,
+    metadata_sm: &TwoBitAggregator,
     summaries: &mut HashMap<u32, NodeSummary>,
     ignore_non_fatal: bool,
 ) {
@@ -1033,7 +1033,7 @@ fn count_mapped_blocks(
 fn read_leaf_nodes(
     ctx: &Context,
     nodes: NodeMap,
-    data_sm: &Arc<Aggregator>,
+    data_sm: &Arc<TwoBitAggregator>,
     ignore_non_fatal: bool,
 ) -> Result<(NodeMap, HashMap<u32, NodeSummary>)> {
     const NR_UNPACKERS: usize = 4;
@@ -1078,8 +1078,8 @@ fn read_leaf_nodes(
 }
 
 struct ExclusiveLeafHandler {
-    metadata_sm: Arc<Aggregator>,
-    data_sm: Arc<Aggregator>,
+    metadata_sm: Arc<TwoBitAggregator>,
+    data_sm: Arc<TwoBitAggregator>,
     nodes: Arc<BatchedNodeMap>,
     summaries: Arc<Mutex<HashMap<u32, NodeSummary>>>,
     ignore_non_fatal: bool,
@@ -1089,8 +1089,8 @@ struct ExclusiveLeafHandler {
 
 impl ExclusiveLeafHandler {
     fn new(
-        metadata_sm: Arc<Aggregator>,
-        data_sm: Arc<Aggregator>,
+        metadata_sm: Arc<TwoBitAggregator>,
+        data_sm: Arc<TwoBitAggregator>,
         nodes: Arc<BatchedNodeMap>,
         summaries: Arc<Mutex<HashMap<u32, NodeSummary>>>,
         ignore_non_fatal: bool,
@@ -1194,7 +1194,7 @@ fn examine_exclusive_leaf_(
     data: &[u8],
     ignore_non_fatal: bool,
     data_sm_size: u64,
-    data_sm: &Arc<Aggregator>,
+    data_sm: &Arc<TwoBitAggregator>,
 ) -> std::result::Result<NodeSummary, NodeError> {
     use nom::bytes::complete::take;
 
@@ -1258,8 +1258,8 @@ fn examine_exclusive_leaf_(
 fn exclusive_unpacker(
     engine: Arc<dyn IoEngine>,
     leaves: &mut dyn Iterator<Item = u64>,
-    metadata_sm: Arc<Aggregator>,
-    data_sm: Arc<Aggregator>,
+    metadata_sm: Arc<TwoBitAggregator>,
+    data_sm: Arc<TwoBitAggregator>,
     nodes: Arc<BatchedNodeMap>,
     summaries: Arc<Mutex<HashMap<u32, NodeSummary>>>,
     ignore_non_fatal: bool,
@@ -1279,8 +1279,8 @@ fn exclusive_unpacker(
 fn read_exclusive_leaves(
     ctx: &Context,
     nodes: NodeMap,
-    metadata_sm: &Arc<Aggregator>,
-    data_sm: &Arc<Aggregator>,
+    metadata_sm: &Arc<TwoBitAggregator>,
+    data_sm: &Arc<TwoBitAggregator>,
     summaries: HashMap<u32, NodeSummary>,
     ignore_non_fatal: bool,
 ) -> Result<(NodeMap, HashMap<u32, NodeSummary>)> {
@@ -1337,8 +1337,8 @@ fn read_exclusive_leaves(
 
 fn count_data_mappings_(
     ctx: &Context,
-    metadata_sm: &Arc<Aggregator>,
-    data_sm: &Arc<Aggregator>,
+    metadata_sm: &Arc<TwoBitAggregator>,
+    data_sm: &Arc<TwoBitAggregator>,
     roots: &[u64],
     ignore_non_fatal: bool,
 ) -> Result<HashMap<u32, NodeSummary>> {
@@ -1402,8 +1402,8 @@ fn count_data_mappings(
     )?;
 
     let data_root = unpack::<SMRoot>(&sb.data_sm_root[..])?;
-    let data_sm = Arc::new(Aggregator::new(data_root.nr_blocks as usize));
-    let metadata_sm = Arc::new(Aggregator::new(ctx.engine.get_nr_blocks() as usize));
+    let data_sm = Arc::new(TwoBitAggregator::new(data_root.nr_blocks as usize));
+    let metadata_sm = Arc::new(TwoBitAggregator::new(ctx.engine.get_nr_blocks() as usize));
 
     ctx.report.set_title("Scanning data mappings");
     let mon_meta_sm = metadata_sm.clone();
