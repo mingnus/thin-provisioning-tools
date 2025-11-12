@@ -47,6 +47,10 @@ impl<T: Clone> HashVec<T> {
         self.map.get(&index).map(|i| &self.entries[*i as usize])
     }
 
+    pub fn get_mut(&mut self, index: u32) -> Option<&mut T> {
+        self.map.get(&index).map(|i| &mut self.entries[*i as usize])
+    }
+
     pub fn len(&self) -> usize {
         self.entries.len()
     }
