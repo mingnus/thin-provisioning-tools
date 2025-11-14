@@ -15,6 +15,10 @@ List of packed thin-pool metadata for tests:
   metadata snapshot broke.
 * tmeta_with_empty_roots.pack: An empty mapping tree root was committed in previous
   transactions. thin_repair should lower the priority of this node.
+- tmeta_with_shared_internal_root.pack: A snapshot is sharing the root with its origin,
+  in which the root is an internal node.
+- tmeta_with_shared_internals_and_leaves.pack: A snapshot is sharing some internal
+  and leaf nodes with its origin.
 
 List of packed era metadata for tests:
 
