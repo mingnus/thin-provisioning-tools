@@ -17,10 +17,13 @@ lvcreate ${vg} --type thin-pool --name ${tp} --size ${pool_size} \
          --chunksize ${blocksize} --poolmetadatasize ${metadata_size} \
          -Zn --poolmetadataspare=n
 
+# commit a metadata transaction
+dmsetup status "${vg}-${tp}"
+
 lvcreate ${vg} --type thin --name ${lv_name} --thinpool ${tp} --virtualsize ${lv_size}
 
 # commit a metadata transaction
-dmsetup status "${vg}/${tp}-tpool"
+dmsetup status "${vg}-${tp}-tpool"
 
 # write some data ...
 dd if=/dev/zero of="/dev/mapper/${vg}-${lv_name}" bs=1M count=4
