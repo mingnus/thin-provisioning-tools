@@ -289,9 +289,7 @@ impl Region for U32Region {
         match &self.rep {
             NoCounts => {
                 // All zeroes
-                for i in (b as usize)..e {
-                    results[i - b as usize] = 0;
-                }
+                results[0..(e - b as usize)].fill(0);
             }
             Bits(bits) => {
                 for i in (b as usize)..e {
