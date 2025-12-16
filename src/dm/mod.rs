@@ -10,6 +10,9 @@
 //! When internal-dm is enabled, it takes priority over the external implementation.
 
 #[cfg(feature = "internal-dm")]
+pub mod ioctl;
+
+#[cfg(feature = "internal-dm")]
 pub mod internal;
 
 #[cfg(not(feature = "internal-dm"))]

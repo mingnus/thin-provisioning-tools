@@ -1326,6 +1326,7 @@ dependencies = [
  "iovec",
  "libc",
  "mockall",
+ "nix",
  "nom 8.0.0",
  "num-derive",
  "num-traits",

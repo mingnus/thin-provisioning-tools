@@ -21,6 +21,7 @@ crc32c = "0.6"
 data-encoding = "2.9"
 devicemapper = { version = "0.34", optional = true }
 exitcode = "1.1.2"
+nix = { version = "0.30", optional = true }
 fixedbitset = "0.5"
 flate2 = "1.1"
 io-uring = { version = "0.7", optional = true }
@@ -56,7 +57,7 @@ default = ["dep:devicemapper"]
 devtools = ["ratatui", "termion"]
 io_uring = ["dep:io-uring"]
 no_cleanup = []
-internal-dm = []
+internal-dm = ["dep:nix"]
 
 [profile.release]
 debug = true

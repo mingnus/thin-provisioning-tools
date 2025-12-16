@@ -231,7 +231,15 @@ impl DmScanner {
 
     pub fn get_info(&mut self, dev_name: &DmName) -> Result<DeviceInfo> {
         let dev = DevId::Name(dev_name);
-        self.dm.device_info(&dev).map_err(|e| e.into())
+        // FIXME: remove compile-time check
+        #[cfg(feature = "internal-dm")]
+        {
+            self.dm.device_info(&dev)
+        }
+        #[cfg(not(feature = "internal-dm"))]
+        {
+            self.dm.device_info(&dev).map_err(|e| e.into())
+        }
     }
 
     /// Convert a device nr to a DmNameBuf
