@@ -8,6 +8,7 @@ license = "GPL-3.0-only"
 [dependencies]
 anyhow = "1.0"
 base64 = "0.22"
+bitflags = "2.6"
 byteorder = "1.4"
 clap = { version = "4.5", default-features = false, features = [
   "std",
@@ -18,7 +19,7 @@ clap = { version = "4.5", default-features = false, features = [
 ] }
 crc32c = "0.6"
 data-encoding = "2.9"
-devicemapper = "0.34"
+devicemapper = { version = "0.34", optional = true }
 exitcode = "1.1.2"
 fixedbitset = "0.5"
 flate2 = "1.1"
@@ -48,12 +49,14 @@ quickcheck = "1.0"
 quickcheck_macros = "1.1"
 rand = "0.9"
 tempfile = "3.23"
-thinp = { path = ".", features = ["devtools"] }
+thinp = { path = ".", features = ["devtools"], default-features = false }
 
 [features]
+default = ["dep:devicemapper"]
 devtools = ["ratatui", "termion"]
 io_uring = ["dep:io-uring"]
 no_cleanup = []
+internal-dm = []
 
 [profile.release]
 debug = true

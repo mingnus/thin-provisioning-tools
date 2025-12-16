@@ -1,5 +1,5 @@
+use crate::dm::*;
 use anyhow::{anyhow, Result};
-use devicemapper::*;
 use nom::IResult;
 use std::collections::*;
 use std::os::unix::fs::{FileTypeExt, MetadataExt};
