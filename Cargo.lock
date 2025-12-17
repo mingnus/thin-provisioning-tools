@@ -330,6 +330,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "devicemapper_internal"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "bitflags",
+ "libc",
+ "nix",
+]
+
+[[package]]
 name = "downcast"
 version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1317,6 +1327,7 @@ dependencies = [
  "crc32c",
  "data-encoding",
  "devicemapper",
+ "devicemapper_internal",
  "duct",
  "exitcode",
  "fixedbitset",
@@ -1326,7 +1337,6 @@ dependencies = [
  "iovec",
  "libc",
  "mockall",
- "nix",
  "nom 8.0.0",
  "num-derive",
  "num-traits",
