@@ -9,19 +9,10 @@
 //!
 //! When internal-dm is enabled, it takes priority over the external implementation.
 
-#[cfg(feature = "internal-dm")]
-pub mod ioctl;
-
-#[cfg(feature = "internal-dm")]
-pub mod internal;
-
-#[cfg(not(feature = "internal-dm"))]
-pub mod external;
-
 // Re-export the appropriate implementation based on feature flags
 // internal-dm takes priority when enabled
 #[cfg(feature = "internal-dm")]
-pub use internal::*;
+pub use devicemapper_internal::*;
 
 #[cfg(not(feature = "internal-dm"))]
-pub use external::*;
+pub use devicemapper_external::*;

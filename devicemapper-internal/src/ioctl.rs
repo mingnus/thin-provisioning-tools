@@ -10,7 +10,7 @@ use std::{
     ptr,
 };
 
-use crate::{ioctl::*, request_code_readwrite};
+use crate::{ioctl_base::*, request_code_readwrite};
 use nix::libc;
 
 /// Device mapper ioctl structure
@@ -152,7 +152,8 @@ impl DmIoctl {
 #[allow(clippy::missing_safety_doc)]
 pub unsafe fn dm_ioctl(fd: c_int, cmd: u8, hdr: *mut DmIoctl) -> Result<(), nix::errno::Errno> {
     let request = request_code_readwrite!(DM_IOCTL, cmd, DmIoctl);
-    let result = libc::ioctl(fd, request as libc::c_ulong, hdr);
+    // SAFETY: This is an unsafe function, and the caller must ensure valid fd and hdr pointer
+    let result = unsafe { libc::ioctl(fd, request as libc::c_ulong, hdr) };
 
     if result < 0 {
         Err(nix::errno::Errno::last())
