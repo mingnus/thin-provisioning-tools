@@ -108,6 +108,10 @@ pub trait IoEngine: Send + Sync {
         blocks: &mut dyn Iterator<Item = u64>,
         handler: &mut dyn ReadHandler,
     ) -> io::Result<()>;
+
+    fn sync_all(&self) -> io::Result<()> {
+        Ok(())
+    }
 }
 
 pub fn get_nr_blocks<P: AsRef<Path>>(path: P) -> io::Result<u64> {

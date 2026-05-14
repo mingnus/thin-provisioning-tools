@@ -145,6 +145,7 @@ impl<'a> SyncReader<'a> {
 pub struct SyncIoEngine {
     nr_blocks: u64,
     file: File,
+    writable: bool,
 }
 
 impl SyncIoEngine {
@@ -170,7 +171,11 @@ impl SyncIoEngine {
         let nr_blocks = get_nr_blocks(path.as_ref())?; // check file mode before opening it
         let file = SyncIoEngine::open_file(path.as_ref(), writable, excl)?;
 
-        Ok(SyncIoEngine { nr_blocks, file })
+        Ok(SyncIoEngine {
+            nr_blocks,
+            file,
+            writable,
+        })
     }
 
     fn bad_read<T>() -> Result<T> {
@@ -366,6 +371,13 @@ impl IoEngine for SyncIoEngine {
     ) -> io::Result<()> {
         let mut reader = SyncReader::new(&self.file, io_block_pool)?;
         reader.stream_blocks(blocks, handler)
+    }
+
+    fn sync_all(&self) -> io::Result<()> {
+        if self.writable {
+            self.file.sync_all()?;
+        }
+        Ok(())
     }
 }
 

@@ -267,6 +267,7 @@ pub struct AsyncIoEngine {
     file: File,
     nr_blocks: u64,
     rings: RingPool,
+    writable: bool,
 }
 
 unsafe impl Sync for AsyncIoEngine {}
@@ -292,6 +293,7 @@ impl AsyncIoEngine {
             file,
             nr_blocks,
             rings,
+            writable,
         })
     }
 
@@ -543,6 +545,13 @@ impl IoEngine for AsyncIoEngine {
 
             Ok(results)
         })
+    }
+
+    fn sync_all(&self) -> io::Result<()> {
+        if self.writable {
+            self.file.sync_all()?;
+        }
+        Ok(())
     }
 }
 
