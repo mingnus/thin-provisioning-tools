@@ -119,7 +119,7 @@ impl WriteBatcher {
         Ok(())
     }
 
-    pub fn flush(&mut self) -> Result<()> {
+    fn flush_queue(&mut self) -> Result<()> {
         if self.queue.is_empty() {
             return Ok(());
         }
@@ -128,11 +128,17 @@ impl WriteBatcher {
         self.flush_(tmp)?;
         Ok(())
     }
+
+    pub fn flush(&mut self) -> Result<()> {
+        self.flush_queue()?;
+        self.engine.sync_all()?;
+        Ok(())
+    }
 }
 
 impl Drop for WriteBatcher {
     fn drop(&mut self) {
-        assert!(self.flush().is_ok());
+        assert!(self.flush_queue().is_ok());
     }
 }
 
