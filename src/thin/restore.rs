@@ -201,6 +201,8 @@ impl<'a> Restorer<'a> {
         let metadata_sm = write_metadata_sm(self.w)?;
         let metadata_sm_root = pack_root(&metadata_sm, SPACE_MAP_ROOT_SIZE)?;
 
+        self.w.flush()?;
+
         // Write the superblock
         let sb = superblock::Superblock {
             flags: SuperblockFlags { needs_check: false },
@@ -217,7 +219,10 @@ impl<'a> Restorer<'a> {
             nr_metadata_blocks: metadata_sm.nr_blocks,
         }
         .overrides(&self.overrides)?;
+
         write_superblock(self.w.engine.as_ref(), SUPERBLOCK_LOCATION, &sb)?;
+        self.w.engine.sync_all()?;
+
         self.in_section = Section::Finalized;
 
         Ok(())
