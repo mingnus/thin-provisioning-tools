@@ -264,7 +264,7 @@ impl<'a> AsyncReader<'a> {
 //--------------------------------
 
 pub struct AsyncIoEngine {
-    input: File,
+    file: File,
     nr_blocks: u64,
     rings: RingPool,
 }
@@ -280,7 +280,7 @@ impl AsyncIoEngine {
         if excl {
             flags |= libc::O_EXCL;
         }
-        let input = OpenOptions::new()
+        let file = OpenOptions::new()
             .read(true)
             .write(writable)
             .custom_flags(flags)
@@ -289,7 +289,7 @@ impl AsyncIoEngine {
         let rings = RingPool::new(NR_RINGS, QUEUE_DEPTH)?;
 
         Ok(Self {
-            input,
+            file,
             nr_blocks,
             rings,
         })
@@ -300,7 +300,7 @@ impl AsyncIoEngine {
     }
 
     fn get_fd(&self) -> RawFd {
-        self.input.as_raw_fd()
+        self.file.as_raw_fd()
     }
 
     fn exec_op(&self, op: &io_uring::squeue::Entry) -> Result<io_uring::cqueue::Entry> {
