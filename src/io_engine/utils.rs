@@ -171,7 +171,7 @@ impl<T: VectoredIo> WriteBlocks for VectoredBlockIo<T> {
                 remaining -= block_size;
                 pos += block_size as u64;
                 os_bufs = &os_bufs[1..];
-                results.push(Err(anyhow!("read failed")));
+                results.push(Err(anyhow!("write failed")));
             }
         }
 
