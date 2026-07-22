@@ -164,9 +164,7 @@ fn batch_adjacent(runs: &[RunOp]) -> Batches {
                 if *b == l {
                     batch.push(Run(*b, *e));
                 } else {
-                    let mut tmp = Vec::new();
-                    std::mem::swap(&mut tmp, &mut batch);
-                    result.push(tmp);
+                    result.push(std::mem::take(&mut batch));
                     batch.push(Run(*b, *e));
                 }
                 last = Some(*e);
@@ -301,9 +299,7 @@ fn split_contiguous(runs: Vec<RunOp>, max: u64, result: &mut Batches) {
         remaining = rem;
 
         if remaining == 0 {
-            let mut tmp = Vec::new();
-            std::mem::swap(&mut tmp, &mut batch);
-            result.push(tmp);
+            result.push(std::mem::take(&mut batch));
             remaining = max;
         }
 
