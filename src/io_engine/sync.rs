@@ -205,6 +205,8 @@ impl SyncIoEngine {
         let mut results: Vec<Result<Block>> = Vec::with_capacity(bs.len());
         let mut bs_index = 0;
 
+        // Keeps gap buffers alive during the vectored io
+        #[allow(clippy::collection_is_never_read)]
         let mut gaps: Vec<Block> = Vec::with_capacity(16);
 
         for batch in batches {
