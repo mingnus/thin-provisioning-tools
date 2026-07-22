@@ -286,7 +286,11 @@ impl SyncIoEngine {
                 }
             }
         }
-        assert_eq!(results.len(), blocks.len());
+
+        // sanity check the batch decomposition
+        if results.len() != blocks.len() {
+            return Self::bad_read();
+        }
 
         Ok(results)
     }
@@ -324,6 +328,11 @@ impl SyncIoEngine {
                     results.push(Err(Self::bad_write()));
                 }
             }
+        }
+
+        // sanity check the batch decomposition
+        if results.len() != blocks.len() {
+            return Err(Self::bad_write());
         }
 
         Ok(results)
