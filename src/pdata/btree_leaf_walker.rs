@@ -134,12 +134,10 @@ impl<'a> LeafWalker<'a> {
             let krs = split_key_ranges(path, kr, &keys)?;
             if depth == 0 {
                 // it is the lowest internal
-                for i in 0..krs.len() {
-                    self.sm.inc(values[i], 1).expect("sm.inc() failed");
-                    for v in &values {
-                        self.leaves.insert(*v as usize);
-                    }
-                    visitor.visit(&krs[i], values[i])?;
+                for (kr, v) in krs.iter().zip(values) {
+                    self.sm.inc(v, 1).expect("sm.inc() failed");
+                    self.leaves.insert(v as usize);
+                    visitor.visit(kr, v)?;
                 }
                 Ok(())
             } else {
