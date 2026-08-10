@@ -244,7 +244,10 @@ impl SyncIoEngine {
             assert!(first.is_some());
 
             // Issue io
-            let run_results = vio.read_blocks(&mut buffers[..], first.unwrap() * BLOCK_SIZE as u64);
+            let run_results = match first.unwrap().checked_mul(BLOCK_SIZE as u64) {
+                Some(pos) => vio.read_blocks(&mut buffers[..], pos),
+                None => Err(io::Error::from(io::ErrorKind::InvalidInput).into()),
+            };
 
             if let Ok(run_results) = run_results {
                 // select results
