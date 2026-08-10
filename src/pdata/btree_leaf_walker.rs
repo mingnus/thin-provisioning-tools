@@ -59,8 +59,9 @@ impl<'a> LeafWalker<'a> {
         }
     }
 
-    fn sm_inc(&mut self, b: u64) {
-        self.sm.inc(b, 1).unwrap();
+    fn sm_inc(&mut self, b: u64) -> Result<()> {
+        self.sm.inc(b, 1).map_err(|e| value_err(e.to_string()))?;
+        Ok(())
     }
 
     fn walk_nodes<LV, V>(
@@ -80,7 +81,7 @@ impl<'a> LeafWalker<'a> {
         let mut blocks = Vec::with_capacity(bs.len());
         let mut filtered_krs = Vec::with_capacity(krs.len());
         for i in 0..bs.len() {
-            self.sm_inc(bs[i]);
+            self.sm_inc(bs[i])?;
             blocks.push(bs[i]);
             filtered_krs.push(krs[i].clone());
         }
@@ -131,7 +132,7 @@ impl<'a> LeafWalker<'a> {
             if depth == 0 {
                 // it is the lowest internal
                 for (kr, v) in krs.iter().zip(values) {
-                    self.sm.inc(v, 1).expect("sm.inc() failed");
+                    self.sm_inc(v)?;
                     self.leaves.insert(v as usize);
                     visitor.visit(kr, v)?;
                 }
@@ -200,7 +201,7 @@ impl<'a> LeafWalker<'a> {
 
         let depth = self.get_depth::<V>(path, root, true)?;
 
-        self.sm_inc(root);
+        self.sm_inc(root)?;
         if depth == 0 {
             // root is a leaf
             self.leaves.insert(root as usize);
