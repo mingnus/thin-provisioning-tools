@@ -59,12 +59,8 @@ impl<'a> LeafWalker<'a> {
         }
     }
 
-    // Atomically increments the ref count, and returns the _old_ count.
-    fn sm_inc(&mut self, b: u64) -> u32 {
-        let sm = &mut self.sm;
-        let count = sm.get(b).unwrap();
-        sm.inc(b, 1).unwrap();
-        count
+    fn sm_inc(&mut self, b: u64) {
+        self.sm.inc(b, 1).unwrap();
     }
 
     fn walk_nodes<LV, V>(
