@@ -220,7 +220,7 @@ impl SyncIoEngine {
                         if first.is_none() {
                             first = Some(*b);
                         }
-                        for b in *b..*e {
+                        for b in *b..=*e {
                             assert_eq!(b, bs[issued_minus_gaps].as_ref().unwrap().loc);
                             buffers.push(bs[issued_minus_gaps].as_ref().unwrap().get_data());
                             issued_minus_gaps += 1;
@@ -232,7 +232,7 @@ impl SyncIoEngine {
                         if first.is_none() {
                             first = Some(*b);
                         }
-                        for loc in *b..*e {
+                        for loc in *b..=*e {
                             let gap_buffer = Block::new(loc);
                             buffers.push(gap_buffer.get_data());
                             gaps.push(gap_buffer);
@@ -252,7 +252,7 @@ impl SyncIoEngine {
                 for op in batch {
                     match op {
                         RunOp::Run(b, e) => {
-                            for i in b..e {
+                            for i in b..=e {
                                 if run_results[rindex].is_err() {
                                     results.push(Self::bad_read());
                                 } else {
@@ -265,7 +265,7 @@ impl SyncIoEngine {
                             }
                         }
                         RunOp::Gap(b, e) => {
-                            rindex += (e - b) as usize;
+                            rindex += (e - b + 1) as usize;
                         }
                     }
                 }
@@ -274,7 +274,7 @@ impl SyncIoEngine {
                 for op in batch {
                     match op {
                         RunOp::Run(b, e) => {
-                            for _ in b..e {
+                            for _ in b..=e {
                                 results.push(Self::bad_read());
                                 bs_index += 1;
                             }

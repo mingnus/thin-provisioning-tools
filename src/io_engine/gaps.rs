@@ -1,11 +1,12 @@
 /// Represents either a contiguous run of blocks or a gap between runs.
 ///
-/// Each variant contains a start and end position (end is exclusive).
+/// Each variant contains a first and last position. Both bounds are inclusive,
+/// in order to describe a run that reaches the last representable block.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunOp {
-    /// Represents a contiguous run of blocks from start (inclusive) to end (exclusive)
+    /// Represents a contiguous run of blocks from first (inclusive) to last (inclusive)
     Run(u64, u64),
-    /// Represents a gap between runs from start (inclusive) to end (exclusive)
+    /// Represents a gap between runs from first (inclusive) to last (inclusive)
     Gap(u64, u64),
 }
 
@@ -13,34 +14,35 @@ fn find_runs(blocks: &[u64], gap_threshold: u64) -> Vec<RunOp> {
     use RunOp::*;
 
     let mut runs: Vec<RunOp> = Vec::with_capacity(16);
-    let mut last: Option<(u64, u64)> = None;
+    let mut current: Option<(u64, u64)> = None;
 
     for b in blocks {
-        if let Some((begin, end)) = last {
+        if let Some((begin, last)) = current {
             #[allow(clippy::comparison_chain)]
-            if *b > end {
-                let len = b - end;
+            let next = last.saturating_add(1);
+            if *b > next {
+                let len = b - last - 1;
                 if len > gap_threshold {
-                    runs.push(Run(begin, end));
-                    last = Some((*b, *b + 1));
+                    runs.push(Run(begin, last));
+                    current = Some((*b, *b));
                 } else {
-                    runs.push(Run(begin, end));
-                    runs.push(Gap(end, *b));
-                    last = Some((*b, *b + 1));
+                    runs.push(Run(begin, last));
+                    runs.push(Gap(next, *b - 1));
+                    current = Some((*b, *b));
                 }
-            } else if *b == end {
-                last = Some((begin, b + 1));
+            } else if *b == next {
+                current = Some((begin, *b));
             } else {
-                runs.push(Run(begin, end));
-                last = Some((*b, b + 1));
+                runs.push(Run(begin, last));
+                current = Some((*b, *b));
             }
         } else {
-            last = Some((*b, b + 1));
+            current = Some((*b, *b));
         }
     }
 
-    if let Some((begin, end)) = last {
-        runs.push(Run(begin, end));
+    if let Some((begin, last)) = current {
+        runs.push(Run(begin, last));
     }
 
     runs
@@ -57,7 +59,7 @@ mod find_runs_tests {
         let bs = vec![1, 2, 3, 4, 5, 6, 7];
 
         let runs = find_runs(&bs, 0);
-        assert_eq!(runs, vec![Run(1, 8)]);
+        assert_eq!(runs, vec![Run(1, 7)]);
     }
 
     #[test]
@@ -65,7 +67,7 @@ mod find_runs_tests {
         let bs = vec![1, 2, 3, 5, 6, 7];
 
         let runs = find_runs(&bs, 0);
-        assert_eq!(runs, vec![Run(1, 4), Run(5, 8)]);
+        assert_eq!(runs, vec![Run(1, 3), Run(5, 7)]);
     }
 
     #[test]
@@ -73,7 +75,7 @@ mod find_runs_tests {
         let bs = vec![1, 2, 3, 5, 6, 7, 100, 101, 102];
 
         let runs = find_runs(&bs, 0);
-        assert_eq!(runs, &[Run(1, 4), Run(5, 8), Run(100, 103)]);
+        assert_eq!(runs, &[Run(1, 3), Run(5, 7), Run(100, 102)]);
     }
 
     #[test]
@@ -83,7 +85,7 @@ mod find_runs_tests {
         let runs = find_runs(&bs, 100);
         assert_eq!(
             runs,
-            vec![Run(1, 4), Gap(4, 5), Run(5, 8), Gap(8, 100), Run(100, 103)]
+            vec![Run(1, 3), Gap(4, 4), Run(5, 7), Gap(8, 99), Run(100, 102)]
         );
     }
 
@@ -94,12 +96,12 @@ mod find_runs_tests {
         assert_eq!(
             runs,
             vec![
-                Run(1, 4),
-                Gap(4, 5),
-                Run(5, 8),
-                Gap(8, 10),
-                Run(10, 13),
-                Run(20, 24)
+                Run(1, 3),
+                Gap(4, 4),
+                Run(5, 7),
+                Gap(8, 9),
+                Run(10, 12),
+                Run(20, 23)
             ]
         );
     }
@@ -111,12 +113,12 @@ mod find_runs_tests {
         assert_eq!(
             runs,
             vec![
-                Run(5, 8),
-                Run(1, 4),
-                Gap(4, 10),
-                Run(10, 13),
-                Gap(13, 20),
-                Run(20, 24)
+                Run(5, 7),
+                Run(1, 3),
+                Gap(4, 9),
+                Run(10, 12),
+                Gap(13, 19),
+                Run(20, 23)
             ]
         );
     }
@@ -128,16 +130,60 @@ mod find_runs_tests {
         assert_eq!(
             runs,
             vec![
-                Run(50, 51),
-                Run(70, 71),
-                Run(10, 11),
-                Run(30, 31),
-                Run(100, 101),
-                Run(120, 121),
-                Run(210, 211),
-                Run(230, 231),
+                Run(50, 50),
+                Run(70, 70),
+                Run(10, 10),
+                Run(30, 30),
+                Run(100, 100),
+                Run(120, 120),
+                Run(210, 210),
+                Run(230, 230),
             ]
         );
+    }
+
+    #[test]
+    fn max_value_alone() {
+        let bs = vec![u64::MAX];
+        let runs = find_runs(&bs, 10);
+        assert_eq!(runs, vec![Run(u64::MAX, u64::MAX)]);
+    }
+
+    #[test]
+    fn run_reaching_max_value() {
+        let bs = vec![u64::MAX - 2, u64::MAX - 1, u64::MAX];
+        let runs = find_runs(&bs, 10);
+        assert_eq!(runs, vec![Run(u64::MAX - 2, u64::MAX)]);
+    }
+
+    #[test]
+    fn max_value_after_gap() {
+        let bs = vec![u64::MAX - 5, u64::MAX];
+        let runs = find_runs(&bs, 10);
+        assert_eq!(
+            runs,
+            vec![
+                Run(u64::MAX - 5, u64::MAX - 5),
+                Gap(u64::MAX - 4, u64::MAX - 1),
+                Run(u64::MAX, u64::MAX),
+            ]
+        );
+    }
+
+    // Ensuring that u64::MAX has no successor, so the next value must start
+    // a new run rather than wrapping the 'last'.
+    #[test]
+    fn no_wrap_past_max_value() {
+        let bs = vec![u64::MAX - 1, u64::MAX, 0];
+        let runs = find_runs(&bs, 10);
+        assert_eq!(runs, vec![Run(u64::MAX - 1, u64::MAX), Run(0, 0),]);
+    }
+
+    #[test]
+    fn break_by_max_value() {
+        let bs = vec![0, 1, u64::MAX, 2, 3];
+        let runs = find_runs(&bs, 10);
+        assert_eq!(runs, vec![Run(0, 1), Run(u64::MAX, u64::MAX), Run(2, 3)]);
     }
 }
 
@@ -265,23 +311,21 @@ mod batch_adjacent_tests {
 fn split_op(op: &RunOp, remaining: u64) -> (RunOp, Option<RunOp>, u64) {
     use RunOp::*;
 
+    let (b, e) = match op {
+        Run(b, e) | Gap(b, e) => (*b, *e),
+    };
+
+    // Test (e - b + 1 <= remaining) as (e - b < remaining) to prevent overflow,
+    // although a RunOp's length cannot exceed u64::MAX since it's constructed
+    // from a slice.
+    if e - b < remaining {
+        return (op.clone(), None, remaining - (e - b) - 1);
+    }
+
+    let split = b + remaining;
     match op {
-        Run(b, e) => {
-            let len = e - b;
-            if len <= remaining {
-                (Run(*b, *e), None, remaining - len)
-            } else {
-                (Run(*b, *b + remaining), Some(Run(*b + remaining, *e)), 0)
-            }
-        }
-        Gap(b, e) => {
-            let len = e - b;
-            if len < remaining {
-                (Gap(*b, *e), None, remaining - len)
-            } else {
-                (Gap(*b, *b + remaining), Some(Gap(*b + remaining, *e)), 0)
-            }
-        }
+        Run(..) => (Run(b, split - 1), Some(Run(split, e)), 0),
+        Gap(..) => (Gap(b, split - 1), Some(Gap(split, e)), 0),
     }
 }
 
@@ -334,16 +378,16 @@ mod split_tests {
 
     #[test]
     fn single() {
-        let runs = vec![vec![Run(1, 100)]];
+        let runs = vec![vec![Run(1, 99)]];
         let batches = split_batches(runs, 21);
         assert_eq!(
             batches,
             [
-                [Run(1, 22)],
-                [Run(22, 43)],
-                [Run(43, 64)],
-                [Run(64, 85)],
-                [Run(85, 100)]
+                [Run(1, 21)],
+                [Run(22, 42)],
+                [Run(43, 63)],
+                [Run(64, 84)],
+                [Run(85, 99)]
             ]
         );
     }
@@ -351,14 +395,14 @@ mod split_tests {
     #[test]
     fn singletons() {
         let runs = vec![
-            vec![Run(50, 51)],
-            vec![Run(70, 71)],
-            vec![Run(10, 11)],
-            vec![Run(30, 31)],
-            vec![Run(100, 101)],
-            vec![Run(120, 121)],
-            vec![Run(210, 211)],
-            vec![Run(230, 231)],
+            vec![Run(50, 50)],
+            vec![Run(70, 70)],
+            vec![Run(10, 10)],
+            vec![Run(30, 30)],
+            vec![Run(100, 100)],
+            vec![Run(120, 120)],
+            vec![Run(210, 210)],
+            vec![Run(230, 230)],
         ];
         let runs_copy = runs.clone();
         let batches = split_batches(runs, 100);
@@ -398,7 +442,8 @@ pub fn count_gaps(batches: &Batches) -> u64 {
         for op in batch {
             match op {
                 RunOp::Gap(b, e) => {
-                    count += e - b;
+                    // The maximum length of a gap is (u64::MAX - 1),
+                    count += e - b + 1;
                 }
                 RunOp::Run(..) => {
                     // do nothing
