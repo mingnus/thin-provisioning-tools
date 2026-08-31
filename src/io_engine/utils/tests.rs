@@ -487,4 +487,35 @@ mod boundaries {
             "block address out of range"
         );
     }
+
+    //---------------------------------
+    // the write path has the same boundaries
+
+    fn write(f: &File, nr: usize, pos: u64) -> Vec<Result<()>> {
+        let owned: Vec<Vec<u8>> = (0..nr).map(|_| vec![0u8; BLOCK_SIZE]).collect();
+        let bufs: Vec<&[u8]> = owned.iter().map(|b| &b[..]).collect();
+        VectoredBlockIo::from(f).write_blocks(&bufs, pos).unwrap()
+    }
+
+    #[test]
+    fn write_spanning_the_offt_limit_fails_every_block() {
+        let f = file_of(BLOCK_SIZE as u64);
+        let results = write(&f, 2, MAX_OFFT_BLOCK * BLOCK_SIZE as u64);
+
+        assert_eq!(results.len(), 2);
+        assert!(results.iter().all(|r| r.is_err()));
+    }
+
+    #[test]
+    fn write_past_the_representable_offset_is_trimmed() {
+        let f = file_of(BLOCK_SIZE as u64);
+        let results = write(&f, 2, MAX_REPRESENTABLE_BLOCK * BLOCK_SIZE as u64);
+
+        assert_eq!(results.len(), 2);
+        assert!(results[0].is_err());
+        assert_eq!(
+            results[1].as_ref().unwrap_err().to_string(),
+            "block address out of range"
+        );
+    }
 }
