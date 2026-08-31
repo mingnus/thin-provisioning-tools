@@ -149,34 +149,43 @@ impl<T: VectoredIo> ReadBlocks for VectoredBlockIo<T> {
 }
 
 impl<T: VectoredIo> WriteBlocks for VectoredBlockIo<T> {
-    fn write_blocks(&self, buffers: &[&[u8]], mut pos: u64) -> Result<Vec<Result<()>>> {
+    fn write_blocks(&self, buffers: &[&[u8]], pos: u64) -> Result<Vec<Result<()>>> {
         let block_size = buffers[0].len();
-        let mut remaining = 0;
-        let mut bufs: Vec<&IoVec> = Vec::with_capacity(buffers.len());
-        for b in buffers.iter() {
+        let nr_buffers = buffers.len();
+
+        // A run may extend past the end of the address space,
+        // so skip those blocks have no offset to write to.
+        let nr_reachable =
+            (((u64::MAX - pos) / block_size as u64) + 1).min(nr_buffers as u64) as usize;
+
+        let mut bufs: Vec<&IoVec> = Vec::with_capacity(nr_reachable);
+        for b in buffers[..nr_reachable].iter() {
             assert_eq!(b.len(), block_size);
-            remaining += b.len();
             bufs.push((*b).into());
         }
-        let mut os_bufs = unix::as_os_slice(&bufs[..]);
-        let mut results = Vec::with_capacity(os_bufs.len());
+        let os_bufs = unix::as_os_slice(&bufs[..]);
+        let mut results = Vec::with_capacity(nr_buffers);
 
-        while remaining > 0 {
-            if let Ok(n) = self.dev.write_vectored_at(os_bufs, pos) {
-                remaining -= n;
-                pos += n as u64;
+        let mut nr_done = 0;
+        while nr_done < nr_reachable {
+            let off = pos + nr_done as u64 * block_size as u64;
+
+            if let Ok(n) = self.dev.write_vectored_at(&os_bufs[nr_done..], off) {
                 assert_eq!(n % block_size, 0);
-                os_bufs = &os_bufs[(n / block_size)..];
                 for _ in 0..(n / block_size) {
                     results.push(Ok(()));
                 }
+                nr_done += n / block_size;
             } else {
                 // Skip to the next iovec
-                remaining -= block_size;
-                pos += block_size as u64;
-                os_bufs = &os_bufs[1..];
                 results.push(Err(anyhow!("write failed")));
+                nr_done += 1;
             }
+        }
+
+        // Blocks whose offset would fall outside the address space
+        for _ in nr_reachable..nr_buffers {
+            results.push(Err(anyhow!("block address out of range")));
         }
 
         Ok(results)
