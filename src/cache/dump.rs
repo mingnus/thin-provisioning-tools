@@ -238,13 +238,20 @@ fn dump_hint_array(
 
 //------------------------------------------
 
+// Wraps the output visitor. It adds the OutputError context to output
+// errors, and marks every mapping dirty when the metadata lacks a clean
+// shutdown, as the kernel does when it loads the mappings.
 struct OutputVisitor<'a> {
     out: &'a mut dyn MetadataVisitor,
+    respect_dirty_flags: bool,
 }
 
 impl<'a> OutputVisitor<'a> {
-    fn new(out: &'a mut dyn MetadataVisitor) -> Self {
-        Self { out }
+    fn new(out: &'a mut dyn MetadataVisitor, respect_dirty_flags: bool) -> Self {
+        Self {
+            out,
+            respect_dirty_flags,
+        }
     }
 }
 
@@ -266,6 +273,10 @@ impl MetadataVisitor for OutputVisitor<'_> {
     }
 
     fn mapping(&mut self, m: &ir::Map) -> anyhow::Result<ir::Visit> {
+        if !self.respect_dirty_flags && !m.dirty {
+            let m = ir::Map { dirty: true, ..*m };
+            return output_context(self.out.mapping(&m));
+        }
         output_context(self.out.mapping(m))
     }
 
@@ -322,7 +333,10 @@ pub fn dump_metadata(
     sb: &Superblock,
     repair: bool,
 ) -> anyhow::Result<()> {
-    let out: &mut dyn MetadataVisitor = &mut OutputVisitor::new(out);
+    // The kernel ignores the on-disk dirty flags after an unclean shutdown
+    // and loads every mapping as dirty, for both metadata formats.
+    let respect_dirty_flags = sb.flags.clean_shutdown;
+    let out: &mut dyn MetadataVisitor = &mut OutputVisitor::new(out, respect_dirty_flags);
 
     let xml_sb = ir::Superblock {
         uuid: "".to_string(),
