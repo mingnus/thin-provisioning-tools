@@ -128,11 +128,14 @@ mod format2 {
 
     struct Inner {
         seen_oblocks: FixedBitSet,
-        dirty_bits: CheckedBitSet,
+        dirty_bits: Option<CheckedBitSet>,
     }
 
     impl MappingChecker {
-        pub fn new(nr_origin_blocks: Option<u64>, dirty_bits: CheckedBitSet) -> MappingChecker {
+        pub fn new(
+            nr_origin_blocks: Option<u64>,
+            dirty_bits: Option<CheckedBitSet>,
+        ) -> MappingChecker {
             if let Some(n) = nr_origin_blocks {
                 MappingChecker {
                     nr_origin_blocks: n,
@@ -200,7 +203,12 @@ mod format2 {
             let cbegin = index as u32 * b.header.max_entries;
             let cend = cbegin + b.header.nr_entries;
             for (m, cblock) in b.values.iter().zip(cbegin..cend) {
-                if let Err(e) = self.check_flags(m, inner.dirty_bits.contains(cblock as usize)) {
+                let dirty_bit = inner
+                    .dirty_bits
+                    .as_ref()
+                    .and_then(|bits| bits.contains(cblock as usize));
+
+                if let Err(e) = self.check_flags(m, dirty_bit) {
                     errs.push(e);
                 }
                 if let Err(e) = self.check_oblock(m, &mut inner.seen_oblocks) {
@@ -324,6 +332,16 @@ pub fn check(opts: CacheCheckOptions) -> anyhow::Result<()> {
                 if let Some(e) = err {
                     ctx.report.fatal(&format!("{}", e));
                 }
+
+                // The dirty bitset is only written on a clean suspend. Stale
+                // bits are expected after an unclean shutdown. The kernel then
+                // ignores them and treats every mapped block as dirty, so do not
+                // cross-check them against the mappings.
+                let dirty_bits = if sb.flags.clean_shutdown {
+                    Some(dirty_bits)
+                } else {
+                    None
+                };
                 let c = format2::MappingChecker::new(nr_origin_blocks, dirty_bits);
                 if let Err(e) = w.walk(&c, sb.mapping_root) {
                     ctx.report.fatal(&format!("{}", e));
