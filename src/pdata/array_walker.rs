@@ -211,14 +211,18 @@ impl NodeVisitor<u64> for BlockPathCollector {
         keys: &[u64],
         values: &[u64],
     ) -> btree_error::Result<()> {
+        let (Some(&first), Some(&last)) = (keys.first(), keys.last()) else {
+            return Ok(());
+        };
+
         // Verify key's continuity.
         // The ordering of keys had been verified in unpack_node(),
         // so comparing the keys against the key range is sufficient.
-        if *keys.first().unwrap() + keys.len() as u64 != *keys.last().unwrap() + 1 {
+        if last - first != keys.len() as u64 - 1 {
             return Err(btree_error::value_err("gaps in array indices".to_string()));
         }
         if let Some(end) = kr.end {
-            if *keys.last().unwrap() + 1 != end {
+            if last.checked_add(1) != Some(end) {
                 return Err(btree_error::value_err(
                     "non-contiguous array indices".to_string(),
                 ));
