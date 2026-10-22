@@ -327,6 +327,10 @@ fn mk_context(opts: &CacheDumpOptions) -> anyhow::Result<CacheDumpContext> {
     Ok(CacheDumpContext { engine })
 }
 
+fn hints_array_available(sb: &Superblock) -> bool {
+    sb.hint_root > 0 && sb.policy_hint_size > 0 && sb.flags.clean_shutdown
+}
+
 pub fn dump_metadata(
     engine: Arc<dyn IoEngine + Send + Sync>,
     out: &mut dyn MetadataVisitor,
@@ -371,7 +375,9 @@ pub fn dump_metadata(
     out.mappings_e()?;
 
     out.hints_b()?;
-    dump_hint_array(engine, out, sb.hint_root, valid_mappings, repair)?;
+    if hints_array_available(sb) {
+        dump_hint_array(engine, out, sb.hint_root, valid_mappings, repair)?;
+    }
     out.hints_e()?;
 
     out.superblock_e()?;
