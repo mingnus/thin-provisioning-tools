@@ -23,6 +23,15 @@ pub struct SuperblockFlags {
     pub needs_check: bool,
 }
 
+impl From<u32> for SuperblockFlags {
+    fn from(flags: u32) -> Self {
+        SuperblockFlags {
+            clean_shutdown: (flags & 0x1) != 0,
+            needs_check: (flags & 0x2) != 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Superblock {
     pub flags: SuperblockFlags,
@@ -101,10 +110,7 @@ fn unpack(data: &[u8]) -> IResult<&[u8], Superblock> {
     Ok((
         i,
         Superblock {
-            flags: SuperblockFlags {
-                clean_shutdown: (flags & 0x1) != 0,
-                needs_check: (flags & 0x2) != 0,
-            },
+            flags: flags.into(),
             block,
             version,
             policy_name: policy_name.splitn(2, |c| *c == 0).next().unwrap().to_vec(),
