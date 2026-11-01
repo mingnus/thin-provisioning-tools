@@ -344,6 +344,7 @@ pub fn dump_metadata(
 
     let xml_sb = ir::Superblock {
         uuid: "".to_string(),
+        flags: None,
         block_size: sb.data_block_size,
         nr_cache_blocks: sb.cache_blocks,
         policy: std::str::from_utf8(&sb.policy_name)?.to_string(),

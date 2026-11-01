@@ -58,6 +58,7 @@ impl MetadataGenerator for CacheGenerator {
 
         let sb = ir::Superblock {
             uuid: String::new(),
+            flags: None,
             block_size: self.block_size,
             nr_cache_blocks: self.nr_cache_blocks,
             policy: String::from("smq"),
