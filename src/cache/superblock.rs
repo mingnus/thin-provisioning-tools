@@ -23,6 +23,28 @@ pub struct SuperblockFlags {
     pub needs_check: bool,
 }
 
+impl From<u32> for SuperblockFlags {
+    fn from(flags: u32) -> Self {
+        SuperblockFlags {
+            clean_shutdown: (flags & 0x1) != 0,
+            needs_check: (flags & 0x2) != 0,
+        }
+    }
+}
+
+impl From<&SuperblockFlags> for u32 {
+    fn from(flags: &SuperblockFlags) -> Self {
+        let mut ret = 0;
+        if flags.clean_shutdown {
+            ret |= 0x1;
+        }
+        if flags.needs_check {
+            ret |= 0x2;
+        }
+        ret
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct Superblock {
     pub flags: SuperblockFlags,
@@ -101,10 +123,7 @@ fn unpack(data: &[u8]) -> IResult<&[u8], Superblock> {
     Ok((
         i,
         Superblock {
-            flags: SuperblockFlags {
-                clean_shutdown: (flags & 0x1) != 0,
-                needs_check: (flags & 0x2) != 0,
-            },
+            flags: flags.into(),
             block,
             version,
             policy_name: policy_name.splitn(2, |c| *c == 0).next().unwrap().to_vec(),
@@ -151,14 +170,7 @@ fn pack_superblock<W: WriteBytesExt>(sb: &Superblock, w: &mut W) -> Result<()> {
     w.write_u32::<LittleEndian>(0)?;
 
     // flags
-    let mut flags: u32 = 0;
-    if sb.flags.clean_shutdown {
-        flags |= 0x1;
-    }
-    if sb.flags.needs_check {
-        flags |= 0x2;
-    }
-    w.write_u32::<LittleEndian>(flags)?;
+    w.write_u32::<LittleEndian>((&sb.flags).into())?;
 
     w.write_u64::<LittleEndian>(sb.block)?;
     w.write_all(&[0; UUID_SIZE])?;
