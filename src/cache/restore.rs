@@ -70,7 +70,7 @@ pub struct Restorer<'a> {
     discard_root: Option<u64>,
     dirty_bits: (u32, u64), // (index in u64 array, value)
     in_section: Section,
-    clean_shutdown: bool,
+    clean_shutdown_mask: bool,
 }
 
 impl<'a> Restorer<'a> {
@@ -88,7 +88,7 @@ impl<'a> Restorer<'a> {
             discard_root: None,
             dirty_bits: (0, 0),
             in_section: Section::None,
-            clean_shutdown: true,
+            clean_shutdown_mask: true,
         }
     }
 
@@ -96,7 +96,7 @@ impl<'a> Restorer<'a> {
         if self.in_section != Section::None {
             return Err(anyhow!("already in superblock"));
         }
-        self.clean_shutdown = false;
+        self.clean_shutdown_mask = false;
         Ok(())
     }
 
@@ -155,7 +155,9 @@ impl<'a> Restorer<'a> {
         let discard_root = self.discard_root.as_ref().unwrap();
         let sb = Superblock {
             flags: SuperblockFlags {
-                clean_shutdown: self.clean_shutdown,
+                clean_shutdown: src_sb.flags.is_none_or(|src_flags| {
+                    SuperblockFlags::from(src_flags).clean_shutdown & self.clean_shutdown_mask
+                }),
                 needs_check: false,
             },
             block: SUPERBLOCK_LOCATION,

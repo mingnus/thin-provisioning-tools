@@ -28,6 +28,9 @@ impl<W: Write> MetadataVisitor for XmlWriter<W> {
     fn superblock_b(&mut self, sb: &Superblock) -> Result<Visit> {
         let mut elem = BytesStart::new("superblock");
         elem.push_attribute(mk_attr(b"uuid", sb.uuid.clone()));
+        if let Some(flags) = sb.flags {
+            elem.push_attribute(mk_attr(b"flags", flags));
+        }
         elem.push_attribute(mk_attr(b"block_size", sb.block_size));
         elem.push_attribute(mk_attr(b"nr_cache_blocks", sb.nr_cache_blocks));
         elem.push_attribute(mk_attr(b"policy", sb.policy.clone()));
@@ -112,6 +115,7 @@ impl<W: Write> MetadataVisitor for XmlWriter<W> {
 
 fn parse_superblock(e: &BytesStart) -> Result<Superblock> {
     let mut uuid: Option<String> = None;
+    let mut flags: Option<u32> = None;
     let mut block_size: Option<u32> = None;
     let mut nr_cache_blocks: Option<u32> = None;
     let mut policy: Option<String> = None;
@@ -121,6 +125,7 @@ fn parse_superblock(e: &BytesStart) -> Result<Superblock> {
         let kv = a.unwrap();
         match kv.key.0 {
             b"uuid" => uuid = Some(string_val(&kv)?),
+            b"flags" => flags = Some(u32_val(&kv)?),
             b"block_size" => block_size = Some(u32_val(&kv)?),
             b"nr_cache_blocks" => nr_cache_blocks = Some(u32_val(&kv)?),
             b"policy" => policy = Some(string_val(&kv)?),
@@ -133,6 +138,7 @@ fn parse_superblock(e: &BytesStart) -> Result<Superblock> {
 
     Ok(Superblock {
         uuid: check_attr(tag, "uuid", uuid)?,
+        flags,
         block_size: check_attr(tag, "block_size", block_size)?,
         nr_cache_blocks: check_attr(tag, "nr_cache_blocks", nr_cache_blocks)?,
         policy: check_attr(tag, "policy", policy)?,

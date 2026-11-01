@@ -5,6 +5,7 @@ use anyhow::Result;
 #[derive(Clone)]
 pub struct Superblock {
     pub uuid: String,
+    pub flags: Option<u32>,
     pub block_size: u32,
     pub nr_cache_blocks: u32,
     pub policy: String,
