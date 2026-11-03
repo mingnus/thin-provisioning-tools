@@ -254,6 +254,11 @@ impl<'a> OutputVisitor<'a> {
 
 impl MetadataVisitor for OutputVisitor<'_> {
     fn superblock_b(&mut self, sb: &ir::Superblock) -> anyhow::Result<ir::Visit> {
+        // FIXME: we don't need this if-block
+        /*if self.all_dirty {
+            let sb = ir::Superblock { flags: None, ..sb.clone() };
+            return output_context(self.out.superblock_b(&sb));
+        }*/
         output_context(self.out.superblock_b(sb))
     }
 
@@ -313,6 +318,7 @@ pub struct CacheDumpOptions<'a> {
     pub output: Option<&'a Path>,
     pub engine_opts: EngineOptions,
     pub repair: bool,
+    pub raw: bool,
 }
 
 struct CacheDumpContext {
@@ -332,16 +338,17 @@ pub fn dump_metadata(
     engine: Arc<dyn IoEngine + Send + Sync>,
     out: &mut dyn MetadataVisitor,
     sb: &Superblock,
+    raw: bool,
     repair: bool,
 ) -> anyhow::Result<()> {
     // The kernel ignores the on-disk dirty flags after an unclean shutdown
     // and loads every mapping as dirty, for both metadata formats.
-    let all_dirty = !sb.flags.clean_shutdown;
+    let all_dirty = !sb.flags.clean_shutdown && !raw;
     let out: &mut dyn MetadataVisitor = &mut OutputVisitor::new(out, all_dirty);
 
     let xml_sb = ir::Superblock {
         uuid: "".to_string(),
-        flags: None,
+        flags: if raw { Some((&sb.flags).into()) } else { None },
         block_size: sb.data_block_size,
         nr_cache_blocks: sb.cache_blocks,
         policy: std::str::from_utf8(&sb.policy_name)?.to_string(),
@@ -396,7 +403,7 @@ pub fn dump(opts: CacheDumpOptions) -> anyhow::Result<()> {
     };
     let mut out = xml::XmlWriter::new(writer);
 
-    dump_metadata(ctx.engine, &mut out, &sb, opts.repair)
+    dump_metadata(ctx.engine, &mut out, &sb, opts.raw, opts.repair)
 }
 
 //------------------------------------------

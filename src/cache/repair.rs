@@ -51,7 +51,7 @@ pub fn repair(opts: CacheRepairOptions) -> Result<()> {
     let mut w = WriteBatcher::new(ctx.engine_out, sm.clone(), batch_size);
     let mut restorer = Restorer::new(&mut w, sb.version as u8);
 
-    dump_metadata(ctx.engine_in, &mut restorer, &sb, true)
+    dump_metadata(ctx.engine_in, &mut restorer, &sb, false, true)
 }
 
 //------------------------------------------

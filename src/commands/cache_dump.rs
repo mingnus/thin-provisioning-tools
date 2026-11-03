@@ -27,6 +27,13 @@ impl CacheDumpCommand {
                     .long("repair")
                     .action(ArgAction::SetTrue),
             )
+            .arg(
+                Arg::new("RAW")
+                    .help("Dump raw metadata")
+                    .long("raw")
+                    .action(ArgAction::SetTrue)
+                    .hide(true),
+            )
             // options
             .arg(
                 Arg::new("OUTPUT")
@@ -77,6 +84,7 @@ impl<'a> Command<'a> for CacheDumpCommand {
             output: output_file,
             engine_opts,
             repair: matches.get_flag("REPAIR"),
+            raw: matches.get_flag("RAW"),
         };
 
         to_exit_code(&report, dump(opts))
