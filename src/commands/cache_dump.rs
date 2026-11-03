@@ -3,7 +3,7 @@ extern crate clap;
 use clap::{Arg, ArgAction};
 use std::path::Path;
 
-use crate::cache::dump::{dump, CacheDumpOptions};
+use crate::cache::dump::{dump, CacheDumpOptions, DumpMode};
 use crate::commands::engine::*;
 use crate::commands::utils::*;
 use crate::commands::Command;
@@ -26,6 +26,13 @@ impl CacheDumpCommand {
                     .short('r')
                     .long("repair")
                     .action(ArgAction::SetTrue),
+            )
+            .arg(
+                Arg::new("RAW")
+                    .help("Dump raw metadata")
+                    .long("raw")
+                    .action(ArgAction::SetTrue)
+                    .hide(true),
             )
             // options
             .arg(
@@ -72,10 +79,16 @@ impl<'a> Command<'a> for CacheDumpCommand {
         }
         let engine_opts = engine_opts.unwrap();
 
+        let mode = if matches.get_flag("RAW") {
+            DumpMode::Raw
+        } else {
+            DumpMode::Normalized
+        };
         let opts = CacheDumpOptions {
             input: input_file,
             output: output_file,
             engine_opts,
+            mode,
             repair: matches.get_flag("REPAIR"),
         };
 

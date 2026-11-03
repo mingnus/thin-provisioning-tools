@@ -239,25 +239,48 @@ fn dump_hint_array(
 //------------------------------------------
 
 // Wraps the output visitor. It adds the OutputError context to output
-// errors, and marks every mapping dirty when the metadata lacks a clean
-// shutdown, as the kernel does when it loads the mappings.
+// errors. In normalized mode, it shows the metadata as the kernel would
+// load it: hides the superblock flags, and marks every mapping dirty
+// if the metadata lacks a clean shutdown.
 struct OutputVisitor<'a> {
     out: &'a mut dyn MetadataVisitor,
+    mode: DumpMode,
+    // Always true in raw mode, and is updated from the superblock in
+    // normalized mode.
     respect_dirty_flags: bool,
 }
 
 impl<'a> OutputVisitor<'a> {
-    fn new(out: &'a mut dyn MetadataVisitor, respect_dirty_flags: bool) -> Self {
+    fn new(out: &'a mut dyn MetadataVisitor, mode: DumpMode) -> Self {
         Self {
             out,
-            respect_dirty_flags,
+            mode,
+            respect_dirty_flags: mode == DumpMode::Raw,
         }
     }
 }
 
 impl MetadataVisitor for OutputVisitor<'_> {
     fn superblock_b(&mut self, sb: &ir::Superblock) -> anyhow::Result<ir::Visit> {
-        output_context(self.out.superblock_b(sb))
+        if self.mode == DumpMode::Raw {
+            return output_context(self.out.superblock_b(sb));
+        }
+
+        // Treat missing superblock flags as unclean, since dump_metadata() always
+        // sets them.
+        let clean_shutdown = sb
+            .flags
+            .is_some_and(|flags| SuperblockFlags::from(flags).clean_shutdown);
+
+        // The kernel ignores the on-disk dirty flags after an unclean shutdown
+        // and loads every mapping as dirty, for both metadata formats.
+        self.respect_dirty_flags = clean_shutdown;
+
+        let sb = ir::Superblock {
+            flags: None,
+            ..sb.clone()
+        };
+        output_context(self.out.superblock_b(&sb))
     }
 
     fn superblock_e(&mut self) -> anyhow::Result<ir::Visit> {
@@ -315,7 +338,19 @@ pub struct CacheDumpOptions<'a> {
     pub input: &'a Path,
     pub output: Option<&'a Path>,
     pub engine_opts: EngineOptions,
+    pub mode: DumpMode,
     pub repair: bool,
+}
+
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub enum DumpMode {
+    // The state the kernel would load. Dump every mapping as dirty
+    // if the metadata is unclean.
+    #[default]
+    Normalized,
+
+    // The state as stored on disk, including the superblock flags.
+    Raw,
 }
 
 struct CacheDumpContext {
@@ -335,16 +370,14 @@ pub fn dump_metadata(
     engine: Arc<dyn IoEngine + Send + Sync>,
     out: &mut dyn MetadataVisitor,
     sb: &Superblock,
+    mode: DumpMode,
     repair: bool,
 ) -> anyhow::Result<()> {
-    // The kernel ignores the on-disk dirty flags after an unclean shutdown
-    // and loads every mapping as dirty, for both metadata formats.
-    let respect_dirty_flags = sb.flags.clean_shutdown;
-    let out: &mut dyn MetadataVisitor = &mut OutputVisitor::new(out, respect_dirty_flags);
+    let out: &mut dyn MetadataVisitor = &mut OutputVisitor::new(out, mode);
 
     let xml_sb = ir::Superblock {
         uuid: "".to_string(),
-        flags: None,
+        flags: Some((&sb.flags).into()),
         block_size: sb.data_block_size,
         nr_cache_blocks: sb.cache_blocks,
         policy: std::str::from_utf8(&sb.policy_name)?.to_string(),
@@ -399,7 +432,7 @@ pub fn dump(opts: CacheDumpOptions) -> anyhow::Result<()> {
     };
     let mut out = xml::XmlWriter::new(writer);
 
-    dump_metadata(ctx.engine, &mut out, &sb, opts.repair)
+    dump_metadata(ctx.engine, &mut out, &sb, opts.mode, opts.repair)
 }
 
 //------------------------------------------
